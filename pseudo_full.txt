@@ -1,0 +1,50 @@
+$00:00: $92      TR $12         ; Relative jump to $12
+$00:01: $e4 $b4  TL $12:34      ; Long jump to $12:34
+$00:03: $c9      TRS $01:12     ; Push PC, jump to $01:12
+$00:04: $f4 $b4  CALL $12:34    ; Push PC, jump to $12:34
+$00:06: $7d      RTN            ; Pop PC
+$00:07: $7e      RTNS           ; Pop PC, skip next instruction
+$00:08: $7f      RTNI           ; Pop PC, enable interrupts
+$00:09: $1c      LAX 12         ; Load 12 to A
+$00:0a: $3c      LBMX 12        ; Load 12 to Bm
+$00:0b: $2c      LBLX 12        ; Load 12 to Bl
+$00:0c: $52      LDA 2          ; Load M to A, XOR Bm with 2
+$00:0d: $56      EXC 2          ; Exchange A with M, XOR Bm with 2
+$00:0e: $5a      EXCI 2         ; Exchange A with M, XOR Bm with 2, increment Bl, skip if Bl = 0
+$00:0f: $5e      EXCD 2         ; Exchange A with M, XOR Bm with 2, decrement Bl, skip if Bl = 15
+$00:10: $64      EXAX           ; Exchange A with X
+$00:11: $65      ATX            ; Load A to X
+$00:12: $66      EXBM           ; Exchange A with Bm
+$00:13: $67      EXBL           ; Exchange A with Bl
+$00:14: $68      EX             ; Exchange B with SB
+$00:15: $0c      ADX 12         ; Add 12 to A, skip if overflow
+$00:16: $7a      ADD            ; Add M to A
+$00:17: $7b      ADC            ; Add M + carry to A, set carry flag and skip if overflow
+$00:18: $79      COMA           ; Complement A
+$00:19: $78      INCB           ; Increment Bl, skip if Bl = 0
+$00:1a: $7c      DECB           ; Decrement Bl, skip if Bl = 15
+$00:1b: $6f      TAM            ; Skip if A = M
+$00:1c: $6e      TC             ; Skip if carry set
+$00:1d: $4a      TM 2           ; Skip if bit 2 of M = 1
+$00:1e: $6b      TABL           ; Skip if A = Bl
+$00:1f: $4e      TPB 2          ; Skip if bit 2 of Pj/Rj = 1
+$00:20: $6c      TA             ; Skip if IFA = 1, clear IFA
+$00:21: $6d      TB             ; Skip if IFB = 1, clear IFB
+$00:22: $69 $02  TT             ; Skip if IFT = 1, clear IFT
+$00:24: $46      SM 2           ; Set bit 2 of M
+$00:25: $42      RM 2           ; Reset bit 2 of M
+$00:26: $61      SC             ; Set carry flag
+$00:27: $60      RC             ; Clear carry flag
+$00:28: $63      IE             ; Enable interrupts
+$00:29: $62      ID             ; Disable interrupts
+$00:2a: $70      INL            ; Load P1 to A
+$00:2b: $71      OUTL           ; Load A to P0
+$00:2c: $72      ANP            ; Set Pj to Pj AND A
+$00:2d: $73      ORP            ; Set Pj to Pj OR A
+$00:2e: $74      IN             ; Load Pj/Rj to A/XA
+$00:2f: $75      OUT            ; Load A/XA to Pj/Rj
+$00:30: $6a      PAT            ; Push PC, set Pu to 4, set Pl to XA, load ROM value at PC to XA, pop PC
+$00:31: $69 $03  DR             ; Clear divider
+$00:33: $76      STOP           ; Enter standby mode (STOP)
+$00:34: $77      HALT           ; Enter standby mode (HALT)
+$00:35: $00      NOP            ; No operation

@@ -1,0 +1,50 @@
+$00:00: $92      TR $12         ; Pl <- $12
+$00:01: $e4 $b4  TL $12:34      ; PC <- $12:34
+$00:03: $c9      TRS $01:12     ; Push, PC <- $01:12
+$00:04: $f4 $b4  CALL $12:34    ; Push, PC <- $12:34
+$00:06: $7d      RTN            ; Pop
+$00:07: $7e      RTNS           ; Pop, skip
+$00:08: $7f      RTNI           ; Pop, IME <- 1
+$00:09: $1c      LAX 12         ; A <- 12
+$00:0a: $3c      LBMX 12        ; Bm <- 12
+$00:0b: $2c      LBLX 12        ; Bl <- 12
+$00:0c: $52      LDA 2          ; A <- M, Bm <- Bm XOR 2
+$00:0d: $56      EXC 2          ; A <> M, Bm <- Bm XOR 2
+$00:0e: $5a      EXCI 2         ; A <> M, Bm <- Bm XOR 2, Bl++, skip if Bl = 0
+$00:0f: $5e      EXCD 2         ; A <> M, Bm <- Bm XOR 2, Bl--, skip if Bl = 15
+$00:10: $64      EXAX           ; A <> X
+$00:11: $65      ATX            ; X <- A
+$00:12: $66      EXBM           ; A <> Bm
+$00:13: $67      EXBL           ; A <> Bl
+$00:14: $68      EX             ; B <> SB
+$00:15: $0c      ADX 12         ; A <- A + 12, skip if Cy = 1
+$00:16: $7a      ADD            ; A <- A + M
+$00:17: $7b      ADC            ; A <- A + M + C, C <- Cy, skip if Cy = 1
+$00:18: $79      COMA           ; A <- ~A
+$00:19: $78      INCB           ; Bl++, skip if Bl = 0
+$00:1a: $7c      DECB           ; Bl--, skip if Bl = 15
+$00:1b: $6f      TAM            ; Skip if A = M
+$00:1c: $6e      TC             ; Skip if C = 1
+$00:1d: $4a      TM 2           ; Skip if M.2 = 1
+$00:1e: $6b      TABL           ; Skip if A = Bl
+$00:1f: $4e      TPB 2          ; Skip if Pj/Rj.2 = 1
+$00:20: $6c      TA             ; Skip if IFA = 1, IFA <- 0
+$00:21: $6d      TB             ; Skip if IFB = 1, IFB <- 0
+$00:22: $69 $02  TT             ; Skip if IFT = 1, IFT <- 0
+$00:24: $46      SM 2           ; M.2 <- 1
+$00:25: $42      RM 2           ; M.2 <- 0
+$00:26: $61      SC             ; C <- 1
+$00:27: $60      RC             ; C <- 0
+$00:28: $63      IE             ; IME <- 1
+$00:29: $62      ID             ; IME <- 0
+$00:2a: $70      INL            ; A <- P1
+$00:2b: $71      OUTL           ; P0 <- A
+$00:2c: $72      ANP            ; Pj <- Pj AND A
+$00:2d: $73      ORP            ; Pj <- Pj OR A
+$00:2e: $74      IN             ; A/XA <- Pj/Rj
+$00:2f: $75      OUT            ; Pj/Rj <- A/XA
+$00:30: $6a      PAT            ; Push, Pu <- 4, Pl <- XA, XA <- ROM(PC), pop
+$00:31: $69 $03  DR             ; Divider <- 0
+$00:33: $76      STOP 
+$00:34: $77      HALT 
+$00:35: $00      NOP 

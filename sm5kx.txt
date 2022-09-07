@@ -1,0 +1,517 @@
+Sharp SM5Kx doc by GenericHeroGuy
+
+Based on datasheet for the SM5Kx (and SM5Lx)
+This is just my interpretation of the datasheet, so I hope it doesn't have any
+errors :P
+
+Contents:
+  I. REGISTERS
+ II. NOT REGISTERS
+III. PORTS
+ IV. MODE REGISTERS
+  V. ACCESSING PORTS
+ VI. INTERRUPTS
+VII. STANDBY MODE
+ IX. INSTRUCTIONS
+  X. INSTRUCTION NOTES
+ XI. SPECIAL ADDRESSES
+
+I. REGISTERS:
+
+A: Accumulator, 4 bits
+   The general-purpose register. Used to move data, perform arithmetic etc.
+
+C: Carry flag, 1 bit
+   Used only by the ADC instruction
+
+X: Auxiliary accumulator, 4 bits
+   Used as temporary register by exchanging with A. (EXAX instruction)
+   Also used to hold the upper 4 bits of data from IN instruction, and the
+   upper 2 bits of the ROM step address to accesss with the PAT instruction.
+
+B: RAM address register, 8 bits
+   Upper 4 bits = Bm, lower 4 bits = Bl
+   Bl selects the port to access when using IN/OUT instructions
+   (see V. ACCESSING PORTS)
+
+SB: "Save B" register, 8 bits
+    EX instruction exchanges B and SB
+
+PC: Program Counter, 12 bits
+    Upper 6 bits = Pu "page", lower 6 bits = Pl "step"
+    Formatted as $Pu:Pl
+
+SR: Stack Register, 12x4 bits
+    Allows up to 4 nested subroutine calls or interrupts.
+    Cannot be accessed manually; it is only affected by push and pop.
+
+IFA, IFB, IFT: Interrupt flag registers
+    IFA/IFB are set when P1 pin 0/1 are pulled low, respectively.
+    IFT is set when the timer overflows.
+    Requests an interrupt when a flag is set. (see VI. INTERRUPTS)
+
+IME: Interrupt Master Enable
+    This flag enables/disables all interrupts on the CPU.
+    Set with IE or RTNI, clear with ID.
+
+Divider: System clock divider
+    Increments on each system clock.
+    Either bit 7 or bit 15 of the divider can be used to tick the timer.
+    Reset to zero with the DR instruction. (see IV. MODE REGISTERS)
+
+
+II. NOT REGISTERS:
+
+M: Denotes the RAM address specified by B
+   Think 8080. Value of M is 4-bit.
+
+Cy: Denotes the carry signal from the ALU
+    This is NOT the same as the C flag!
+
+Pj, Rj: Denotes the port or mode register number specified by Bl
+        Used by IN, OUT, ANP and ORP. (see V. ACCESSING PORTS)
+
+XA: Denotes the combination of A and X into an 8-bit register pair
+    Used by IN, OUT and PAT.
+
+
+III. PORTS:
+
+P0, P1, P2, P3, P4, P5 are external ports, 4 bits and 4 pins on the CPU each.
+
+P0: Output-only port
+Access with OUT, OUTL, ANP, ORP.
+
+P1: "Interrupt port"
+Pulling pin 0 or 1 low also sets IFA or IFB respectively. They trigger an
+interrupt unless masked with RE, and can be directly tested w/ TA and TB.
+Additionally, pin 1 can be used to tick the timer by setting RC.
+Pulling pins 2 or 3 low forces the CPU to wake up from standby. (see STANDBY)
+Access with INL, IN.
+
+P2: General I/O port
+Unlike P4 and P5, each individual pin can be set to either input/output
+using RF.
+Access with IN, OUT, ANP, ORP.
+
+P3: "Analog port"
+Used by the A/D converter to either convert an analog input to digital, or
+compare the analog input to a reference voltage.
+Which pins are digital or analog input is selected by R3.
+However, only one can be used for A/D conversion; select which with R8.
+Access with IN.
+
+P4: General I/O port
+Direction is determined by the instruction last used to access the port;
+it becomes an input if read (IN) or output if written (OUT/ANP/ORP).
+Access with IN, OUT, ANP, ORP.
+
+P5: General I/O port
+Same as P4.
+Access with IM, OUT, ANP, ORP.
+
+
+IV. MODE REGISTERS:
+
+R3, R8, R9, RA, RB, RC, RE, RF are internal ports.
+R3, RC, RE and RF are 4 bits; R8, R9, RA, RB are 8 bits.
+4-bit ports are accessed as usual, but 8-bit ports are accessed by combining
+the A and X registers into an 8-bit register pair, like so:
+7 6 5 4  3 2 1 0
+   X        A
+All bits in the mode registers are read/write, except for R8 bit 4,
+which is read-only, and R3, which is write-only.
+
+
+R3: A/D pin selection register
+This register controls which pins of P3 are analog or digital.
+Bit 0 = pin 0, bit 3 = pin 3.
+Bit cleared (0) = digital, bit set (1) = analog.
+
+R8: A/D control register
+This selects which P3 pin to use as analog input, A/D mode, comparison result,
+and the low 2 bits of either the conversion result, or the reference voltage
+used in comparison mode, as selected by the mode select bit.
+Setting the Enable flag to 0 reduces power usage.
+
+7  bit  0
+---------
+RREC SM10
+|||| ||||
+|||| ||++- Analog input select
+|||| ||    (0: P3.0  1: P3.1
+|||| ||     2: P3.2  3: P3.3)
+|||| |+--- Mode select
+|||| |     (0: conversion  1: comparison)
+|||| +---- Status
+||||       (0: stop  1: in operation)
+|||+------ Comparison result (READ-ONLY!)
+|||        (0: P3 voltage < reference voltage
+|||         1: P3 voltage > reference voltage)
+||+------- Enable flag
+||         (0: disable A/D  1: enable A/D)
+++-------- Low 2 bits of A/D conversion result
+             OR
+           Low 2 bits of reference voltage in comparison mode
+
+R9: A/D data register
+This holds the upper 8 bits of either the conversion result, or the reference
+voltage used in comparison mode, as selected by the mode select bit in R8.
+
+RA: Timer count register
+This register increments as the timer is ticked by the clock source
+determined by RC. When it overflows or is written to (OUT), RB is copied
+to RA. Reads return the 8-bit counter value.
+
+RB: Timer modulo register
+This register contains the reload value for RA. When RA is written to or
+overflows, this 8-bit value is copied to RA.
+
+RC: Timer control register
+
+3  0
+----
+SxIN
+| ||
+| ++- Timer clock source
+|     (0: system clock
+|      1: system clock / 128 (divider bit 7)
+|      2: system clock / 32768 (divider bit 15)
+|      3: pin 1 of P1)
++---- Timer enable
+      (0: stop  1: start)
+
+RE: Interrupt enable register
+
+3  0
+----
+xTBA
+ |||
+ ||+- P1 bit 0 interrupt (IFA)
+ ||   (0: disable  1: enable)
+ |+-- P1 bit 1 interrupt (IFB)
+ |    (0: disable  1: enable)
+ +--- Timer interrupt (IFT)
+      (0: disable  1: enable)
+
+RF: P2 direction register
+This register controls the direction of the P2 pins.
+Bit 0 = pin 0, bit 3 = pin 3.
+Bit cleared (0) = input, bit set (1) = output.
+
+
+V. ACCESSING PORTS:
+
+When using the port instructions, the port or mode register to access is
+determined by the value of Bl.
+4-bit ports are accessed with A, 8-bit ports are accessed with XA.
+Note that Bl = 3 is used to access both P3 (IN) and R3 (OUT)!
+
+ Bl value  Port Bit     Instructions
+/---------T----T---T---------------------\
+| Bl = 0  | P0 | 4 | OUT    ANP ORP OUTL |
+| Bl = 1  | P1 | 4 |     IN         INL  |
+| Bl = 2  | P2 | 4 | OUT IN ANP ORP      |
+| Bl = 3  | P3 | 4 |     IN              |
+| Bl = 3  | R3 | 4 | OUT                 |
+| Bl = 4  | P4 | 4 | OUT IN ANP ORP      |
+| Bl = 5  | P5 | 4 | OUT IN ANP ORP      |
+| Bl = 6  | .. |   |                     |
+| Bl = 7  | .. |   |                     |
+| Bl = 8  | R8 | 8 | OUT IN              |
+| Bl = 9  | R9 | 8 | OUT IN              |
+| Bl = 10 | RA | 8 | OUT IN              |
+| Bl = 11 | RB | 8 | OUT IN              |
+| Bl = 12 | RC | 4 | OUT IN              |
+| Bl = 13 | .. |   |                     |
+| Bl = 14 | RE | 4 | OUT IN              |
+| Bl = 15 | RF | 4 | OUT IN              |
+\---------|----|---|---------------------/
+
+
+VI. INTERRUPTS:
+
+The CPU supports three interrupt sources, each with their own flag:
+IFA, set when P1 pin 0 is pulled low.
+IFB, set when P1 pin 1 is pulled low.
+IFT, set when the timer overflows.
+
+When any of these flags are set, an interrupt is *requested*. This by itself
+will not *trigger* an interrupt; the corresponding bit in mode register RE
+(interrupt enable) must also be set. Additionally, the Interrupt Master Enable
+(IME) flag must be set. An interrupt will continuously be requested until all
+interrupt flags are cleared.
+
+The interrupt flags can be tested with the TA/TB/TT instructions. This will
+also clear the flag.
+The IME flag can be directly set with IE or RTNI, and cleared with ID.
+Useful when processing interrupt-sensitive code. RTNI lets you simultaneously
+return from an interrupt handler and re-enable interrupts.
+
+When an interrupt is triggered, the IME flag is cleared, PC is pushed to the
+stack, and the CPU jumps to one of three locations, in order of priority:
+$02:00 if IFA was set
+$02:02 if IFB was set
+$02:04 if IFT was set
+
+
+VII. STANDBY MODE:
+
+Using the HALT or STOP instructions, the CPU can enter a low-power standby
+mode to conserve power.
+During HALT mode, the system clock is stopped, and the CPU ceases execution.
+The main clock remains active, allowing the timer to continue ticking.
+During STOP mode, both the system clock and main clock are stopped.
+All registers and the contents of RAM are preserved during standby.
+
+Standby mode exits when an interrupt is triggered, this can be masked via RE.
+Clearing IME will not prevent standby exit via interrupts.
+Pulling pins 2 or 3 of P1 low, or a hardware reset will also exit standby mode.
+These cannot be masked.
+
+When standby mode exits, the CPU jumps to $03:00. If IME is set and standby
+mode exits due to an interrupt, the instruction at $03:00 is executed before
+an interrupt is triggered immediately afterwards.
+
+Note that before entering standby, if an interrupt is triggered but IME is
+cleared, standby mode will exit immediately upon entering it.
+
+
+IX. INSTRUCTIONS:
+
+Symbols:
+  <- = Data transfer
+  <> = Data exchange
+  x = Immediate value, 4 bits if unspecified
+  xy = 12-bit immediate
+  s = 2-bit immediate
+  skip = If condition is true, next instruction is treated as NOP
+  Push = Pushes PC on the stack
+  Pop = Pops PC from the stack
+
+
+CONTROL INSTRUCTIONS:
+
+  TR x:    Local jump (6-bit imm.)
+  Pl <- x
+
+  TL xy:   Long jump
+  PC <- xy
+
+  TRS x:   Page call (5-bit imm.)
+  Push
+  Pu <- 1
+  Pl <- x << 1
+
+  CALL xy: Call subroutine
+  Push
+  PC <- xy
+
+  RTN:     Return from subroutine
+  Pop
+
+  RTNS:    Return and skip
+  Pop
+  Skip
+
+  RTNI:    Return and enable interrupts
+  Pop
+  IME <- 1
+
+
+TRANSFER INSTRUCTIONS:
+
+  LAX x:  Load immediate to A
+  A <- x
+
+  LBMX x: Load immediate to Bm
+  Bm <- x
+
+  LBLX x: Load immediate to Bl
+  Bl <- x
+
+  LDA s:  Load memory to A
+  A <- M
+  Bm <- Bm XOR s
+
+  EXC s:  Exchange A with memory
+  A <> M
+  Bm <- Bm XOR s
+
+  EXCI s: Exchange A with memory and increment
+  A <> M
+  Bl <- Bl + 1        ;increment Bl
+  Bm <- Bm XOR s
+  if Bl = 0 then skip ;skip if Bl overflows
+
+  EXCD s: Exchange A with memory and decrement
+  A <> M
+  Bl <- Bl - 1         ;decrement Bl
+  Bm <- Bm XOR s
+  if Bl = 15 then skip ;skip if Bl underflows
+
+  EXAX:   Exchange A with X
+  A <> X
+
+  ATX:    Load A to X
+  X <- A
+
+  EXBM:   Exchance A with Bm
+  A <> Bm
+
+  EXBL:   Exchance A with Bl
+  A <> Bl
+
+  EX:     Exchange B with SB
+  B <> SB
+
+
+ARITHMETIC INSTRUCTIONS:
+
+  ADX x:  Add immediate to A
+  A <- A + x
+  if Cy = 1 then skip ;skip if A overflows
+
+  ADD:    Add memory to A
+  A <- A + M
+
+  ADC:    Add memory to A with carry
+  A <- A + M + C
+  C <- Cy
+  if Cy = 1 then skip ;skip if A overflows (i.e. C flag is set)
+
+  COMA:   Complement A
+  A <- A XOR 15
+
+  INCB:   Increment Bl
+  Bl <- Bl + 1
+  if Bl = 0 then skip ;skip if Bl overflows
+
+  DECB:   Decrement Bl
+  Bl <- Bl - 1
+  if Bl = 15 then skip ;skip if Bl underflows
+
+
+TEST INSTRUCTIONS:
+
+  TAM:  Skip if A equals memory
+  if A = M then skip
+
+  TC:   Skip if carry set
+  if C = 1 then skip
+
+  TM s: Skip if memory bit set
+  if bit s of M = 1 then skip
+
+  TABL: Skip if A equals Bl
+  if A = Bl then skip
+
+  TPB:  Skip if port bit set
+  if bit s of Pj/Rj = 1 then skip
+
+  TA:   Skip if interrupt flag A set
+  if IFA = 1 then skip
+  IFA <- 0
+
+  TB:   Skip if interrupt flag B set
+  if IFB = 1 then skip
+  IFB <- 0
+
+  TT:   Skip if timer interrupt flag set
+  if IFt = 1 then skip
+  IFT <- 0
+
+
+BIT INSTRUCTIONS:
+
+  SM s: Set memory bit
+  bit s of M <- 1
+
+  RM s: Reset memory bit
+  bit s of M <- 0
+
+  SC:   Set carry
+  C <- 1
+
+  RC:   Clear carry
+  C <- 0
+
+  IE:   Enable interrupts
+  IME <- 1
+
+  ID:   Disable interrupts
+  IME <- 0
+
+
+PORT INSTRUCTIONS:
+
+  INL:   Read port P1
+  A <- P1
+
+  OUTL:  Write port P0
+  P0 <- A
+
+  ANP:   AND with port
+  Pj <- A AND Pj
+
+  ORP:   OR with port
+  Pj <- A OR Pj
+
+  IN:    Read port
+  A <- Pj/Rj (4-bit)
+  XA <- Rj   (8-bit)
+
+  OUT:   Write port
+  Pj/Rj <- A (4-bit)
+  Rj <- XA   (8-bit)
+
+
+SPECIAL INSTRUCTIONS:
+
+  PAT:  Table load
+  Push
+  Ph <- 4
+  Pl <- XA ;uses low 2 bits of X
+  XA <- ROM(PC) ;load byte from ROM to XA
+  Pop
+
+  DR:   Clear divider
+  Divider <- 0
+
+  STOP: Enter standby mode (STOP)
+
+  HALT: Enter standby mode (HALT)
+
+  NOP:  No operation
+
+
+X. INSTRUCTION NOTES
+
+TR allows you to jump anywhere within the current page.
+
+TRS lets you call any address between $01:00 and $01:3E, in steps of 2.
+Useful for commonly accessed subroutines.
+
+RTNS skips the instruction immediately after returning.
+
+The behavior of IN/OUT depends on the size of the port.
+The port number to access is selected by Bl.
+(see V. ACCESSING PORTS, IV. MODE REGISTERS)
+
+PAT lets you load any 8-bit value from ROM page $04, specified by XA.
+
+The opcode for NOP is $00, so technically this instruction means:
+A <- A + 0
+if Cy = 1 then skip
+
+
+XI. SPECIAL ADDRESSES
+
+$00:00         Reset vector
+$01:00-$01:3E  TRS addresses
+$02:00         IFA vector
+$02:02         IFB vector
+$02:04         IFT vector
+$03:00         Standby exit
+$04:00-$04:3F  PAT table
+
