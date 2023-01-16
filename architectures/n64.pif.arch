@@ -1,0 +1,61 @@
+// Sharp SM5
+
+#directive db 1
+#directive dw 2
+
+adx *04   ;%0000 =a
+lax *04   ;%0001 =a
+lblx *04  ;%0010 =a
+lbmx *04  ;%0011 =a
+
+rm *02    ;%010000 =a
+sm *02    ;%010001 =a
+tm *02    ;%010010 =a
+tpb *02   ;%010011 =a
+lda *02   ;%010100 =a
+exc *02   ;%010101 =a
+exci *02  ;%010110 =a
+excd *02  ;%010111 =a
+
+tr *06    ;%10 =a
+trs *05   ;%110 >>01a
+tl *04    ;%1110 >>08a >>04a ~a
+call *04  ;%1111 >>08a >>04a ~a
+
+nop       ;$00
+rc        ;$60
+sc        ;$61
+id        ;$62
+ie        ;$63
+exax      ;$64
+atx       ;$65
+exbm      ;$66
+exbl      ;$67
+ex        ;$68
+//prefix  ;$69
+pat       ;$6a
+tabl      ;$6b
+ta        ;$6c
+tb        ;$6d
+tc        ;$6e
+tam       ;$6f
+
+inl       ;$70
+outl      ;$71
+anp       ;$72
+orp       ;$73
+in        ;$74
+out       ;$75
+stop      ;$76
+halt      ;$77
+incb      ;$78
+coma      ;$79
+add       ;$7a
+adc       ;$7b
+decb      ;$7c
+rtn       ;$7d
+rtns      ;$7e
+rtni      ;$7f
+
+tt        ;$69 $02
+dr        ;$69 $03
