@@ -11,15 +11,17 @@ origin $000
 	trs TRS10  // L0D_31
 	lbmx 3
 	lblx 4
-	trs L01_16
+	trs L01_16 // [$34..$3f] = 0
 	lbmx 5
 	lblx 14
+// [$5e] = CIC region ID
 	trs TRS0E  // L0C_00
 
 	decb
 	lax 1
 	tam
 	tr L00_12
+// ID == 1
 	lax 4
 	tr L00_16
 
@@ -27,6 +29,7 @@ L00_12:
 	lax 9
 	tam
 	trs TRS0C // L03_39
+// ID == 9
 	lax 12
 
 L00_16:
@@ -38,17 +41,20 @@ L00_16:
 L00_1A:
 	exbm
 L00_1B:
-	trs L01_16
+	trs L01_16 // [$80..$ff] = 0
 	exbm
 	adx 1
 	tr L00_1A
 
 	lbmx 1
 	lblx 10
+// [$1a..$1f] = CIC seed
 L00_21:
+// read nibble of CIC seed
 	trs TRS0E // L0C_00
 	tr L00_21
 
+// encode seed
 	lblx 10
 	trs TRS0A // L0E_15
 	lblx 10
@@ -94,17 +100,21 @@ TRS0E:
 TRS10:
 	tl L0D_31
 
+// write $fb to [B] and zero rest of segment
 L01_12:
 	lax 15
 	exci 0
 	lax 11
 	exci 0
+
+// zero memory from B to end of segment
 L01_16:
 	lax 0
 	exci 0
 	tr L01_16
 	rtn
 
+// fill [$40..$45] with 8
 L01_1A:
 	lbmx 4
 	lblx 5
@@ -131,6 +141,7 @@ L01_20:
 	tr L01_35
 	nop
 
+// read bit from CIC into C
 L01_2A:
 // set Bl to 5, save old Bl in X
 	lax 5
@@ -162,7 +173,6 @@ L01_35:
 // restore Bl from X
 	exax
 	exbl
-L01_3C:
 	rtn
 
 // page 2 (interrupt vectors)
@@ -316,24 +326,26 @@ L03_3B:
 	tr L03_3B
 
 // page 4 (PAT data)
-// some of this may be raw data!
 origin $100
 
-	lax 9
-	tm 2
-	call L06_08
-	tr L04_35
-	exci 2
-	outl
-	trs TRS06 // L09_0D
-	trs L01_3C
-	sc
-	lax 0
-	db $ed // could be interpreted as TL $36:1E, but that page doesn't exist?
-L04_0C:
-	tr L04_1E
-	tr L04_0C
+	db $19
+	db $4a
+	db $f1
+	db $88
+	db $b5
+	db $5a
+	db $71
+	db $c3
+	db $de
+	db $61
+	db $10
+	db $ed
+	db $9e
+	db $8c
 
+// swap internal and external memory
+// [$1b..$1f] <-> [$cb..$cf]
+// [$34..$3f] <-> [$e4..$ef]
 L04_0E:
 	lbmx 12
 	lblx 11
@@ -351,7 +363,6 @@ L04_14:
 	adx 11
 	exbm
 	exc 0
-L04_1E:
 	incb
 	tr L04_14
 	lbmx 15
@@ -378,7 +389,6 @@ L04_33:
 	lax 4
 L04_34:
 	ex
-L04_35:
 	incb
 	call L0D_35
 	add
@@ -397,6 +407,8 @@ L05_00:
 	trs L01_16
 	lblx 14
 	ie
+
+// wait for rom lockout bit of PIF status byte to become set
 L05_05:
 	tm 0
 	tr L05_05
@@ -410,11 +422,11 @@ L05_05:
 	out   // P2 <- 1
 	trs L01_1A
 
-// wait for bit 5 of PIF status byte to become set
-// (checksum verification bit?)
 	lbmx 15
 	lblx 14
 	ie
+
+// wait for checksum verification bit
 -;	tm 1
 	tr -
 
@@ -422,6 +434,8 @@ L05_05:
 	trs TRS02 // L04_0E
 	sm 3
 	ie
+
+// wait for clear pif ram bit
 L05_18:
 	tm 2
 	tr L05_18
@@ -432,6 +446,8 @@ L05_18:
 	call L0E_00
 	lbmx 3
 	lblx 4
+
+// compare checksum
 L05_22:
 	lax 0
 	exc 1
@@ -476,7 +492,6 @@ L06_00:
 	lax 3
 	out
 	lbmx 0
-L06_08:
 	lblx 12
 	trs L01_16
 L06_0A:
@@ -916,6 +931,8 @@ L0B_3B:
 // page C
 origin $300
 
+// read nibble from CIC into [B]
+// increments BL, returns with skip on carry
 L0C_00:
 	lax 15
 	exc 0
@@ -1046,12 +1063,14 @@ L0D_2F:
 	lbmx 15
 	tr L0D_1E
 
+// set SB = $56
 L0D_31:
 	lbmx 5
 	lblx 6
 	ex
 	rtn
 
+// increment B and wrap to $80 on overflow
 L0D_35:
 	incb
 	rtn
@@ -1089,6 +1108,7 @@ L0E_0D:
 	trs TRS0A // L0E_15
 	tl L0F_00
 
+// encode CIC seed or checksum (one round)
 L0E_15:
 	lax 15
 L0E_16:
