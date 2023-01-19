@@ -22,6 +22,7 @@ typedef struct {
   r8 sb;
   bool c;
   bool ime;
+  bool ifb;
 } rfile;
 
 rfile r;
@@ -34,6 +35,7 @@ r4 ram[256];
 #define SB r.b.x
 #define C r.c
 #define IME r.ime
+#define IFB r.ifb
 
 #define RAM(i) ram[(i)].l
 
@@ -47,5 +49,6 @@ r4 ram[256];
 
 u8 readIO(u8 port);
 void writeIO(u8 port, u8 value);
+void readCommand(void);
 void fatalError(void);
 void notImpl(u8 pu, u8 pl);

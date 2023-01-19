@@ -1,0 +1,36 @@
+# P5 handshake - NTSC region
+0 0 0 8
+# P5 seed - CIC 6102
+8 0 8 8
+8 8 0 8
+0 0 8 8
+8 0 0 8
+0 0 8 8
+8 8 0 8
+# ROM lockout
+0x10
+# Checksum verification
+0x20
+# Clear PIF RAM
+0x40
+# P9 ?
+8
+# P5 checksum - all zero (encoded)
+0 0 0 0
+0 8 0 0
+8 8 8 0
+0 0 8 0
+0 8 0 8
+8 8 0 8
+0 0 0 8
+8 0 0 8
+8 8 8 0
+8 0 8 0
+8 0 0 0
+0 8 0 0
+8 0 8 8
+8 0 8 8
+0 0 8 8
+0 0 8 8
+# Terminate boot process
+0x08
