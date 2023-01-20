@@ -33,13 +33,16 @@ void sub_40E(void);
 void sub_414(void);
 void sub_500(void);
 void sub_52D(void);
+void sub_600(void);
 void sub_700(void);
 void sub_90D(void);
 bool sub_C00(void);
 bool sub_C10(void);
+void sub_D00(void);
 void sub_D31(void);
 void sub_E00(void);
 void sub_E15(void);
+void sub_E1B(void);
 void sub_F00(void);
 void sub_F1B(void);
 
@@ -115,6 +118,11 @@ void sub_106(void) {
   sub_90D();
 }
 
+// 01:08
+void sub_108(void) {
+  sub_E1B();
+}
+
 // 01:0A
 void sub_10A(void) {
   sub_E15();
@@ -138,10 +146,10 @@ void sub_110(void) {
 // 01:12
 // write 0xfb at B and zero rest of segment
 void sub_112(void) {
-  A = 0xf;
-  SWAP(A, RAM(B));
-  A = 0xb;
-  SWAP(A, RAM(B));
+  RAM(B) = 0xf;
+  ++BL;
+  RAM(B) = 0xb;
+  ++BL;
   sub_116();
 }
 
@@ -188,7 +196,66 @@ void sub_12A(void) {
 
 // 03:0B
 void sub_30B(void) {
-  notImpl(0x03, 0x0B);
+  IME = 1;
+
+loc_30C:
+  B = 0x5e;
+  if (!(RAM(0x5e) & BIT(3))) {
+    continuation = sub_600;
+    return;
+  }
+  if (!(RAM(0x5e) & BIT(1)))
+    goto loc_316;
+  RAM(B) &= ~BIT(1);
+  continuation = sub_D00;
+  return;
+
+loc_316:
+  A = 0x2;
+  sub_120();
+  A = 0x2;
+  sub_120();
+  BM = 0x6;
+  sub_108();
+  sub_108();
+  sub_108();
+  BM = 0x7;
+  sub_108();
+  sub_108();
+  sub_108();
+  B = 0x77;
+  A = RAM(0x77);
+  if (A)
+    A += 0xf;
+  A += 0x1;
+  if (A)
+    SWAP(A, BL);
+
+loc_329:
+  BM = 0x6;
+  A = 0x3;
+  if (!(RAM(B) & BIT(0)))
+    A = 0x2;
+  sub_120();
+  BM = 0x7;
+  sub_12A();
+  if (C == 0)
+    goto loc_337;
+  if (!(RAM(B) & BIT(0))) {
+    sub_339();
+    return;
+  }
+
+loc_334:
+  if (++BL)
+    goto loc_329;
+  goto loc_30C;
+
+loc_337:
+  if (!(RAM(B) & BIT(0)))
+    goto loc_334;
+
+  sub_339();
 }
 
 // 03:39
@@ -302,6 +369,11 @@ void sub_52D(void) {
   continuation = sub_30B;
 }
 
+// 06:00
+void sub_600(void) {
+  notImpl(0x06, 0x00);
+}
+
 // 06:29
 bool sub_629(void) {
   SWAP(A, RAM(B));
@@ -389,6 +461,11 @@ bool sub_C10(void) {
   return (++BL == 0);
 }
 
+// 0D:00
+void sub_D00(void) {
+  notImpl(0x0D, 0x00);
+}
+
 // 0D:31
 void sub_D31(void) {
   B = 0x56;
@@ -435,6 +512,53 @@ void sub_E15(void) {
     A += RAM(B);
     SWAP(A, RAM(B));
   } while (++BL);
+}
+
+// 0E:1B
+void sub_E1B(void) {
+  BL = 0xf;
+  A = RAM(B);
+
+  do {
+    u8 X = A;
+    BL = 0x1;
+    A = A + RAM(B) + 1;
+    SWAP(A, RAM(B));
+    A = RAM(B);
+    ++BL;
+    A = A + RAM(B) + 1;
+    A = ~A;
+    SWAP(A, RAM(B));
+    ++BL;
+    bool Cy = A + RAM(B) + 1 >= 0x10;
+    A = A + RAM(B) + 1;
+    if (!Cy) {
+      SWAP(A, RAM(B));
+      ++BL;
+    }
+    A += RAM(B);
+    SWAP(A, RAM(B));
+    A = RAM(B);
+    ++BL;
+    A += RAM(B);
+    SWAP(A, RAM(B));
+    ++BL;
+    Cy = A + 0x8 >= 0x10;
+    A += 0x8;
+    if (!Cy)
+      A += RAM(B);
+    SWAP(A, RAM(B));
+    ++BL;
+
+    do {
+      A += 0x1;
+      A += RAM(B);
+      SWAP(A, RAM(B));
+      A = RAM(B);
+    } while (++BL);
+    SWAP(A, X);
+    A += 0xf;
+  } while (A != 0xf);
 }
 
 // 0F:00

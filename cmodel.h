@@ -32,7 +32,7 @@ r4 ram[256];
 #define B r.b.x
 #define BL r.b.l
 #define BM r.b.m
-#define SB r.b.x
+#define SB r.sb.x
 #define C r.c
 #define IME r.ime
 #define IFB r.ifb
