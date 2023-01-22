@@ -18,6 +18,10 @@ typedef void (*continuation_t)(void);
 
 void (*continuation)(void);
 
+bool IFA = 0;
+
+void checkInterrupt(void);
+
 // The only non-code data in the ROM, taken from 04:00.
 const u8 rom[] = {
     0x19, 0x4a, 0xf1, 0x88, 0xb5, 0x5a, 0x71, 0xc3,
@@ -47,6 +51,7 @@ bool sub_C00(void);
 bool sub_C10(void);
 void sub_C32(void);
 void sub_D00(void);
+void sub_D1B(void);
 void sub_D31(void);
 void sub_E00(void);
 void sub_E15(void);
@@ -219,12 +224,13 @@ void sub_200(void) {
   if (!(readIO(BL) & BIT(2)))
     goto loc_239;
   B = 0xff;
-  if (!(RAM(0xff) & 1 << 0x1)) {
+  readCommand();
+  if (!(RAM(0xff) & BIT(1))) {
     sub_713();
     return;
   }
   B = 0x5e;
-  if (!(RAM(0x5e) & 1 << 0x3))
+  if (!(RAM(0x5e) & BIT(3)))
     goto loc_239;
   sub_709();
   return;
@@ -278,6 +284,12 @@ void sub_306(void) {
 // 03:0B
 void sub_30B(void) {
   IME = 1;
+  static bool checkOnce;  // todo: remove, for testing purposes
+  if (!checkOnce) {
+    checkOnce = true;
+    IFA = 1;
+    checkInterrupt();
+  }
 
 loc_30C:
   B = 0x5e;
@@ -498,7 +510,11 @@ void sub_700(void) {
 
 // 07:09
 void sub_709(void) {
-  notImpl(0x07, 0x09);
+  RAM(0xff) &= ~BIT(1);
+  RAM(0x5e) |= BIT(1);
+  B = 0x56;
+  SWAP(A, RAM(0x56));
+  SWAP(B, SB);
 }
 
 // 07:13
@@ -765,7 +781,58 @@ void sub_C32(void) {
 
 // 0D:00
 void sub_D00(void) {
-  notImpl(0x0D, 0x00);
+  A = 0x3;
+  sub_120();
+  A = 0x2;
+  sub_120();
+  B = 0x0a;
+  sub_10E();
+  sub_10E();
+  B = 0xdd;
+  sub_D1B();
+  B = 0x0b;
+
+  while (!sub_100())
+    ;
+  sub_12A();
+  B = 0xdf;
+  sub_D1B();
+  BM = 0x5;
+  sub_306();
+  sub_110();
+
+  continuation = sub_30B;
+}
+
+void sub_D1B(void) {
+  SWAP(B, SB);
+  B = 0xe0;
+
+loc_D1E:
+  SWAP(B, SB);
+  A = RAM(B);
+  A += 0xf;
+  if (A == 0xf)
+    return;
+  SWAP(A, RAM(B));
+  A = 0xd;
+  if (0xd != BL)
+    goto loc_D2B;
+  SWAP(B, SB);
+  sub_104();
+  if (!sub_104())
+    goto loc_D1E;
+  goto loc_D2F;
+
+loc_D2B:
+  SWAP(B, SB);
+  sub_10E();
+  if (!sub_10E())
+    goto loc_D1E;
+
+loc_D2F:
+  BM = 0xf;
+  goto loc_D1E;
 }
 
 // 0D:31
@@ -951,7 +1018,6 @@ void sub_F2F(void) {
 // end PIF ROM
 
 void checkInterrupt(void) {
-  static bool IFA = 1;
   if (IFA && (RE & BIT(0)) && IME) {
     IFA = 0;
     IME = 0;

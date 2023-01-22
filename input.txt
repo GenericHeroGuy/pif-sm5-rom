@@ -8,14 +8,6 @@
 0 0 8 8
 8 8 0 8
 
-# P7
-#8 0
-
-# P7
-0
-# Joybus command
-0x01
-
 # ROM lockout
 0x10
 # Checksum verification
@@ -43,3 +35,20 @@
 0 0 8 8
 # Terminate boot process
 0x08
+
+# P7
+#8 0
+
+# P7
+8 4
+# CIC challenge
+0x02
+# P5
+8 0 8 0
+8 0 8 0
+0
+
+# P7
+#0
+# Joybus command
+#0x01
