@@ -464,7 +464,48 @@ void sub_52D(void) {
 
 // 06:00
 void sub_600(void) {
-  notImpl(0x06, 0x00);
+  A = 0x3;
+  sub_120();
+  A = 0x3;
+  sub_120();
+  BL = 0x5;
+  A = 0x3;
+  writeIO(0x5, 0x3);
+  B = 0x0c;
+  sub_116();
+
+loc_60A:
+  B = 0xfe;
+  RAM(0xfe) |= BIT(3);
+  B = 0x05;
+  if (!(readIO(0x5) & BIT(3)))
+    goto loc_618;
+  BL = 0xf;
+  if (!sub_100() || !sub_100())
+    goto loc_60A;
+  sub_10C();
+  BL = 0x5;
+
+loc_618:
+  A = 0x1;
+  writeIO(0x5, 0x1);
+  BL = 0x8;
+  A = 0x0;
+
+  while (!(readIO(0x8) & BIT(3)))
+    ;
+
+  IME = 0;
+  BL = 0x6;
+  writeIO(0x6, A);
+  A = 0x9;
+  BL = 0x8;
+  writeIO(0x8, 0x9);
+  A = 0x8;
+  writeIO(0x8, 0x8);
+  C = 1;
+
+  continuation = sub_030;
 }
 
 // 06:29
