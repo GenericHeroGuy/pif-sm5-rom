@@ -5,9 +5,9 @@ origin $000
 
 	lax 1
 	lblx 5
-	out        //write 1 to P5
+	out        // P5 <- 1
 	lblx 14
-	out        //write 1 to RE (enable interrupt A)
+	out        // RE <- 1 (enable interrupt A)
 	trs TRS10  // L0D_31
 	lbmx 3
 	lblx 4
@@ -118,10 +118,10 @@ L01_16:
 L01_1A:
 	lbmx 4
 	lblx 5
-L01_1C:
-	lax 8
+
+-;	lax 8
 	excd 0
-	tr L01_1C
+	tr -
 	rtn
 
 L01_20:
@@ -131,7 +131,7 @@ L01_20:
 	exbl
 
 	exax
-	out // P5 <- A
+	out   // P5 <- A
 
 // short delay
 	lax 11
@@ -158,7 +158,7 @@ L01_2A:
 
 // if bit 3 of P5 is set, set carry, else clear carry
 	sc
-	tpb 3
+	tpb 3 // test P5.3
 	rc
 
 L01_35:
@@ -190,16 +190,16 @@ ift_int:
 	lblx 14
 	rm 3
 	lax 1
-	out
+	out   // RE <- 1 (enable interrupt A)
 	lblx 8
 	lax 2
-	out
+	out   // R8 <- 2
 	tr L02_3B
 
 L02_0E:
-	tpb 3
+	tpb 3 // test ??.3
 	tr L02_1D
-	tpb 2
+	tpb 2 // test ??.2
 	tr L02_39
 	lbmx 15
 	lblx 15
@@ -256,13 +256,13 @@ halt_exit:
 	tm 3
 	rtn
 	lax 5
-	out
+	out   // RE <- 5 (enable interrupt A and B)
 	rtn
 
 L03_06:
 	lblx 14
 	lax 1
-	out
+	out   // RE <- 1 (enable interrupt A)
 	halt
 	tr halt_exit
 
@@ -321,7 +321,7 @@ L03_39:
 	id
 	lblx 8
 L03_3B:
-	out
+	out   // R8 <- A
 	coma
 	tr L03_3B
 
@@ -374,14 +374,14 @@ L04_23:
 	lax 0
 	out   // P2 <- 0
 	lax 1
-	out
+	out   // P2 <- 1
 	lblx 10
-	in
+	in    // A <- RA
 	exbl
 	lbmx 1
 	call L0C_32
 	lblx 4
-	tpb 3
+	tpb 3 // test P4.3
 	tr L04_33
 	lax 8
 	tr L04_34
@@ -395,7 +395,7 @@ L04_34:
 	exc 0
 	ex
 	lax 0
-	out
+	out   // P4 <- 0
 	tl L07_1B
 
 // page 5
@@ -409,14 +409,13 @@ L05_00:
 	ie
 
 // wait for rom lockout bit of PIF status byte to become set
-L05_05:
-	tm 0
-	tr L05_05
+-;	tm 0
+	tr -
 
 	id
 	lax 1
 	lblx 6
-	out
+	out   // P6 <- 1
 	lblx 2
 	lax 1
 	out   // P2 <- 1
@@ -436,9 +435,9 @@ L05_05:
 	ie
 
 // wait for clear pif ram bit
-L05_18:
-	tm 2
-	tr L05_18
+-;	tm 2
+	tr -
+
 	id
 	lax 0
 	exc 0
@@ -456,6 +455,7 @@ L05_22:
 	lbmx 3
 	incb
 	tr L05_22
+
 	lbmx 4
 	lblx 10
 	trs L01_12
@@ -474,9 +474,9 @@ L05_2D:
 	lbmx 5
 	lblx 14
 	lax 5
-	out
+	out   // RE <- 5 (enable interrupt A and B)
 	sm 3
-	tb
+	tb    // clear interrupt B flag
 	nop
 	tl L03_0B
 
@@ -490,7 +490,7 @@ L06_00:
 	trs L01_20
 	lblx 5
 	lax 3
-	out
+	out   // P5 <- 3
 	lbmx 0
 	lblx 12
 	trs L01_16
@@ -503,7 +503,7 @@ L06_0A:
 
 	lbmx 0
 	lblx 5
-	tpb 3
+	tpb 3 // test P5.3
 	tr L06_18
 	lblx 15
 	trs TRS00 // L06_29
@@ -514,21 +514,21 @@ L06_0A:
 	lblx 5
 L06_18:
 	lax 1
-	out
+	out   // P5 <- 1
+
 	lblx 8
 	lax 0
-L06_1C:
-	tpb 3
-	tr L06_1C
+-;	tpb 3 // test R8.3
+	tr -
 
 	id
 	lblx 6
-	out
+	out   // P6 <- 0
 	lax 9
 	lblx 8
-	out
+	out   // R8 <- 9
 	lax 8
-	out
+	out   // R8 <- 8
 	sc
 	tl L00_30
 
@@ -587,11 +587,11 @@ L07_18:
 	out   // P2 <- 1
 L07_1B:
 	lblx 10
-	in
+	in    // A <- RA
 	adx 15
 	tr L07_38
 L07_1F:
-	out
+	out   // RA <- A
 	exbl
 	lbmx 4
 	tm 0
@@ -629,17 +629,17 @@ L08_00:
 	tr L08_1D
 	exci 0
 L08_05:
-	tpb 2
+	tpb 2 // test ??.2
 	tl L04_23
-	tpb 3
+	tpb 3 // test ??.3
 	tr L08_05
 
 	ex
 	lda 0
 	incb
-	outl
+	outl  // P0 <- A
 	lda 0
-	outl
+	outl  // P0 <- A
 	incb
 	tr L08_17
 	exbm
@@ -662,6 +662,7 @@ L08_1D:
 	lbmx 3
 	lblx 3
 	tr L08_38
+
 L08_22:
 	excd 0
 	exc 0
@@ -669,15 +670,15 @@ L08_22:
 	tl L07_18
 	exci 0
 L08_28:
-	tpb 2
+	tpb 2 // test ??.2
 	tl L04_23
-	tpb 3
+	tpb 3 // test ??.3
 	tr L08_28
 
-	inl
+	inl   // A <- P3
 	ex
 	exci 0
-	inl
+	inl   // A <- P3
 	exci 0
 	tr L08_37
 	exbm
@@ -723,9 +724,8 @@ L09_0D:
 
 L09_0F:
 	exax
-L09_10:
-	adx 1
-	tr L09_10
+-;	adx 1
+	tr -
 	exax
 	adx 1
 	tr L09_0F
@@ -976,20 +976,20 @@ L0C_20:
 L0C_23:
 	lblx 4
 	lax 0
-	out
+	out   // P4 <- 0
 L0C_26:
 	lblx 3
-	tpb 3
+	tpb 3 // test P3.3
 	tr L0C_23
 	lblx 2
 	lax 3
 	out   // P2 <- 3
 	lax 1
-	out
+	out   // P2 <- 1
+
 	lblx 3
-L0C_2F:
-	tpb 3
-	tr L0C_2F
+-;	tpb 3 // test P3.3
+	tr -
 	rtn
 
 L0C_32:
@@ -1020,9 +1020,9 @@ L0D_00:
 	call L0D_1B
 	lbmx 0
 	lblx 11
-L0D_0E:
-	trs TRS00 // L06_29
-	tr L0D_0E
+
+-;	trs TRS00 // L06_29
+	tr -
 
 	trs L01_2A
 	lbmx 13
@@ -1076,10 +1076,9 @@ L0D_35:
 	rtn
 	exbm
 	adx 1
-	tr L0D_3B
+	tr +
 	lax 8
-L0D_3B:
-	exbm
++;	exbm
 	rtn
 
 // page E
@@ -1092,10 +1091,10 @@ L0E_00:
 	call L0F_1B
 	lblx 5
 	lax 3
-	out
+	out   // R3 <- 3 (set P3 pins 0 and 1 to analog)
 	trs TRS06 // L09_0D
 	lax 1
-	out
+	out   // R3 <- 1 (set P3 pin 0 to analog)
 	lbmx 2
 	lblx 0
 L0E_0D:
@@ -1196,17 +1195,17 @@ L0F_1B:
 	lbmx 6
 	lblx 9
 	lax 1
-	out
+	out   // R9 <- 1
 
 L0F_1F:
 	call L06_29
 	nop
 	lblx 9
-	tpb 3
+	tpb 3 // test R9.3
 	tr L0F_1F
 
 	lax 0
-	out
+	out   // R9 <- 0
 	excd 0
 	exax
 	exc 0
