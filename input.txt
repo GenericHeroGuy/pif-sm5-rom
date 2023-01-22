@@ -9,7 +9,12 @@
 8 8 0 8
 
 # P7
-8 0
+#8 0
+
+# P7
+0
+# Joybus command
+0x01
 
 # ROM lockout
 0x10

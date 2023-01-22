@@ -232,6 +232,7 @@ void sub_200(void) {
 loc_21D:
   sub_306();
   B = 0xff;
+  readCommand();
   if (!(RAM(0xff) & BIT(0)))
     goto loc_237;
   RAM(B) &= ~BIT(0);
@@ -518,7 +519,191 @@ void sub_90D(void) {
 
 // 09:2D
 void sub_92D(void) {
-  notImpl(0x9, 0x2d);
+  B = 0x80;
+
+loc_92F:
+  do {
+    A = 0xf;
+    if (0xf != RAM(B))
+      goto loc_A0E;
+    ++BL;
+    A = RAM(B);
+    A += 0x1;
+    if (A)
+      goto loc_A03;
+  } while (++BL);
+
+  SWAP(A, BM);
+  A += 0x1;
+
+  SWAP(A, BM);
+  goto loc_92F;
+
+loc_A03:
+  A += 0x1;
+  if (!A)
+    return;
+
+  A += 0x1;
+  if (A)
+    goto loc_A1F;
+  SWAP(B, SB);
+  BM = 0x4;
+  RAM(B) |= BIT(0);
+  BM = 0x1;
+  SWAP(B, SB);
+  goto loc_A14;
+
+loc_A0E:
+  A = 0x0;
+  if (0 != RAM(B))
+    goto loc_A20;
+  ++BL;
+  if (0 != RAM(B))
+    goto loc_A1F;
+
+loc_A14:
+  if (++BL)
+    goto loc_A1B;
+  SWAP(A, BM);
+  A += 0x1;
+  if (!A)
+    return;
+
+  SWAP(A, BM);
+
+loc_A1B:
+  SWAP(B, SB);
+  if (++BL)
+    goto loc_B33;
+
+loc_A1F:
+  if (!BL--)
+    goto loc_A21;
+
+loc_A20:
+  SWAP(A, BM);
+loc_A21:
+  u8 X = A;
+  SWAP(A, BM);
+  SWAP(A, X);
+  SWAP(B, SB);
+  SWAP(A, RAM(B));
+  BM ^= 0x1;
+  SWAP(B, SB);
+  SWAP(A, BL);
+  X = A;
+  SWAP(A, BL);
+  SWAP(A, X);
+  SWAP(B, SB);
+  SWAP(A, RAM(B));
+  BM ^= 0x1;
+  if (++BL)
+    SWAP(B, SB);
+  A = RAM(B);
+  RAM(B) &= ~BIT(2);
+  RAM(B) &= ~BIT(3);
+  SWAP(A, RAM(B));
+  if (++BL)
+    SWAP(A, X);
+  A = RAM(B);
+  SWAP(B, SB);
+  BM = 0x4;
+  if (BL--)
+    RAM(B) &= ~BIT(3);
+  if (++BL)
+    BM = 0x1;
+  SWAP(A, X);
+
+  SWAP(A, RAM(B));
+  BM ^= 0x1;
+  SWAP(A, X);
+  SWAP(A, RAM(B));
+  BM ^= 0x1;
+  SWAP(B, SB);
+  if (++BL)
+    goto loc_B0B;
+  SWAP(A, BM);
+  A += 0x1;
+  if (A)
+    goto loc_B0A;
+  goto loc_B3A;
+
+loc_B0A:
+  SWAP(A, BM);
+
+loc_B0B:
+  A = RAM(B);
+  RAM(B) &= ~BIT(3);
+  RAM(B) &= ~BIT(2);
+  SWAP(A, RAM(B));
+  if (++BL)
+    SWAP(A, X);
+  A = RAM(B);
+  SWAP(B, SB);
+  BM = 0x0;
+  C = A + RAM(B) >= 0x10;
+  A = A + RAM(B);
+  SWAP(A, RAM(B));
+  BM ^= 0x1;
+  SWAP(A, X);
+  bool Cy = A + RAM(B) + C >= 0x10;
+  A = A + RAM(B) + C;
+  C = Cy;
+  if (!Cy) {
+    SWAP(A, RAM(B));
+    BM ^= 0x1;
+  }
+  A = RAM(B);
+  C = A + RAM(B) >= 0x10;
+  A = A + RAM(B);
+  SWAP(A, RAM(B));
+  BM ^= 0x1;
+  A = RAM(B);
+  Cy = A + RAM(B) + C >= 0x10;
+  A = A + RAM(B) + C;
+  C = Cy;
+  if (!Cy) {
+    SWAP(A, RAM(B));
+    BM ^= 0x1;
+  }
+  SWAP(B, SB);
+  SWAP(A, BL);
+  SWAP(B, SB);
+  C = A + RAM(B) + 1 >= 0x10;
+  A = A + RAM(B) + 1;
+  BM = 0x1;
+  SWAP(B, SB);
+  SWAP(A, BL);
+  SWAP(A, BM);
+  SWAP(B, SB);
+  Cy = A + RAM(B) + C >= 0x10;
+  A = A + RAM(B) + C;
+  C = Cy;
+  if (!Cy)
+    goto loc_B30;
+  goto loc_B3B;
+
+loc_B30:
+  SWAP(B, SB);
+  SWAP(A, BM);
+  SWAP(B, SB);
+
+loc_B33:
+  A = 0x5;
+  if (5 == BL)
+    return;
+  SWAP(B, SB);
+  goto loc_92F;
+
+loc_B3A:
+  SWAP(B, SB);
+
+loc_B3B:
+  if (BL--)
+    BM = 0x4;
+  RAM(B) &= ~BIT(0);
+  RAM(B) |= BIT(3);
 }
 
 // 0C:00
@@ -566,7 +751,16 @@ bool sub_C10(void) {
 
 // 0C:32
 void sub_C32(void) {
-  notImpl(0x0c, 0x32);
+  A = RAM(B);
+  BM ^= 0x1;
+  SWAP(B, SB);
+  SWAP(A, BM);
+  SWAP(B, SB);
+  A = RAM(B);
+  BM ^= 0x1;
+  SWAP(B, SB);
+  SWAP(A, BL);
+  SWAP(B, SB);
 }
 
 // 0D:00
@@ -732,7 +926,26 @@ void sub_F1B(void) {
 
 // 0F:2F
 void sub_F2F(void) {
-  notImpl(0x0f, 0x2f);
+  B = 0x57;
+  SWAP(B, SB);
+  SWAP(A, BM);
+  SWAP(B, SB);
+  SWAP(A, RAM(0x57));
+  BM ^= 0x1;
+  SWAP(B, SB);
+  SWAP(A, BL);
+  SWAP(B, SB);
+  SWAP(A, RAM(0x47));
+  BM ^= 0x1;
+  ++BL;
+  u8 X = 0;  // todo: is this an in or out param?
+  SWAP(A, X);
+  SWAP(A, RAM(0x58));
+  ++BL;
+  RAM(0x59) |= BIT(0);
+  if (C == 0)
+    RAM(0x59) &= ~BIT(0);
+  C = 0;
 }
 
 // end PIF ROM
