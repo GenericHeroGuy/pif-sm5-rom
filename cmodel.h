@@ -23,6 +23,7 @@ typedef struct {
   bool c;
   bool ime;
   bool ifb;
+  r4 re;
 } rfile;
 
 rfile r;
@@ -36,6 +37,7 @@ r4 ram[256];
 #define C r.c
 #define IME r.ime
 #define IFB r.ifb
+#define RE r.re.l
 
 #define RAM(i) ram[(i)].l
 

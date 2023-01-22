@@ -7,6 +7,10 @@
 8 0 0 8
 0 0 8 8
 8 8 0 8
+
+# P7
+8 0
+
 # ROM lockout
 0x10
 # Checksum verification

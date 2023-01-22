@@ -14,6 +14,8 @@
 
 FILE* input;
 
+typedef void (*continuation_t)(void);
+
 void (*continuation)(void);
 
 // The only non-code data in the ROM, taken from 04:00.
@@ -28,16 +30,22 @@ void sub_10C(void);
 bool sub_10E(void);
 void sub_110(void);
 void sub_116(void);
+void sub_306(void);
 void sub_339(void);
 void sub_40E(void);
 void sub_414(void);
 void sub_500(void);
 void sub_52D(void);
 void sub_600(void);
+bool sub_629(void);
 void sub_700(void);
+void sub_709(void);
+void sub_713(void);
 void sub_90D(void);
+void sub_92D(void);
 bool sub_C00(void);
 bool sub_C10(void);
+void sub_C32(void);
 void sub_D00(void);
 void sub_D31(void);
 void sub_E00(void);
@@ -45,6 +53,7 @@ void sub_E15(void);
 void sub_E1B(void);
 void sub_F00(void);
 void sub_F1B(void);
+void sub_F2F(void);
 
 // 00:00
 void sub_000(void) {
@@ -123,6 +132,11 @@ void sub_108(void) {
   sub_E1B();
 }
 
+// 01:00
+bool sub_100(void) {
+  return sub_629();
+}
+
 // 01:0A
 void sub_10A(void) {
   sub_E15();
@@ -192,6 +206,72 @@ void sub_12A(void) {
   writeIO(5, 1);
   for (A = 0xc; A; ++A)
     ;  // spin
+}
+
+// 02:00
+void sub_200(void) {
+  SWAP(B, SB);
+  SWAP(A, RAM(B));
+  ++BL;
+
+  if (!(readIO(BL) & BIT(3)))
+    goto loc_21D;
+  if (!(readIO(BL) & BIT(2)))
+    goto loc_239;
+  B = 0xff;
+  if (!(RAM(0xff) & 1 << 0x1)) {
+    sub_713();
+    return;
+  }
+  B = 0x5e;
+  if (!(RAM(0x5e) & 1 << 0x3))
+    goto loc_239;
+  sub_709();
+  return;
+
+loc_21D:
+  sub_306();
+  B = 0xff;
+  if (!(RAM(0xff) & BIT(0)))
+    goto loc_237;
+  RAM(B) &= ~BIT(0);
+  sub_F2F();
+  B = 0x10;
+  SWAP(B, SB);
+  sub_11A();
+  sub_92D();
+
+  // 02:2C
+  B = 0x59;
+  C = 1;
+  if (!(RAM(0x59) & BIT(0)))
+    C = 0;
+  if (BL--)
+    SWAP(A, RAM(B));
+  u8 X = 0;  // todo: is this value important?
+  if (BL--)
+    SWAP(A, X);
+  sub_C32();
+  goto loc_23B;
+
+loc_237:
+  BM = 0x5;
+  goto loc_23B;
+
+loc_239:
+  sub_306();
+
+loc_23B:
+  BL = 0x6;
+  SWAP(A, RAM(B));
+  SWAP(B, SB);
+  IME = 1;
+}
+
+// 03:06
+void sub_306(void) {
+  // todo: should we do anything for halt/standby?
+  // notImpl(0x03, 0x06);
 }
 
 // 03:0B
@@ -404,7 +484,25 @@ loc_634:
 
 // 07:00
 void sub_700(void) {
-  notImpl(0x07, 0x00);
+  BM = 0x4;
+  if (!sub_100() || !sub_100() || !sub_100()) {
+    continuation = sub_52D;
+    return;
+  }
+
+  sub_10C();
+
+  abort();
+}
+
+// 07:09
+void sub_709(void) {
+  notImpl(0x07, 0x09);
+}
+
+// 07:13
+void sub_713(void) {
+  notImpl(0x07, 0x13);
 }
 
 // 09:0D
@@ -416,6 +514,11 @@ void sub_90D(void) {
     while (++X & 0xf)
       ;
   } while (++A);
+}
+
+// 09:2D
+void sub_92D(void) {
+  notImpl(0x9, 0x2d);
 }
 
 // 0C:00
@@ -459,6 +562,11 @@ bool sub_C10(void) {
     A = 0x2;
   sub_120();
   return (++BL == 0);
+}
+
+// 0C:32
+void sub_C32(void) {
+  notImpl(0x0c, 0x32);
 }
 
 // 0D:00
@@ -622,7 +730,27 @@ void sub_F1B(void) {
   // RAM(0x69) = 0;
 }
 
+// 0F:2F
+void sub_F2F(void) {
+  notImpl(0x0f, 0x2f);
+}
+
 // end PIF ROM
+
+void checkInterrupt(void) {
+  static bool IFA = 1;
+  if (IFA && (RE & BIT(0)) && IME) {
+    IFA = 0;
+    IME = 0;
+    continuation_t saved = continuation;
+    continuation = NULL;
+    sub_200();
+    if (continuation)
+      abort();
+    continuation = saved;
+    return;
+  }
+}
 
 int scanValue(void) {
   // remove comments before next token
@@ -648,6 +776,9 @@ u8 readIO(u8 port) {
 }
 
 void writeIO(u8 port, u8 value) {
+  if (port == 0xe) {
+    RE = value;
+  }
   printf("w %x %x\n", port, value);
 }
 
@@ -677,6 +808,7 @@ int main(int argc, char* argv[]) {
   }
   continuation = sub_000;
   while (continuation) {
+    checkInterrupt();
     (*continuation)();
   }
 }

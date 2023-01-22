@@ -13,3 +13,5 @@ run: cmodel
 
 clean:
 	rm -f pif.sm5.rom cmodel cmodel.o
+
+-include user.mk
