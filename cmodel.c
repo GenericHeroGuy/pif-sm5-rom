@@ -34,6 +34,8 @@ void sub_10C(void);
 bool sub_10E(void);
 void sub_110(void);
 void sub_116(void);
+void sub_22C(void);
+void sub_23B(void);
 void sub_306(void);
 void sub_339(void);
 void sub_40E(void);
@@ -45,14 +47,22 @@ bool sub_629(void);
 void sub_700(void);
 void sub_709(void);
 void sub_713(void);
+void sub_71B(void);
+void sub_900(void);
+void sub_909(void);
 void sub_90D(void);
+bool sub_916(void);
+void sub_91F(void);
+void sub_922(void);
 void sub_92D(void);
 bool sub_C00(void);
 bool sub_C10(void);
+void sub_C26(void);
 void sub_C32(void);
 void sub_D00(void);
 void sub_D1B(void);
 void sub_D31(void);
+void sub_D35(void);
 void sub_E00(void);
 void sub_E15(void);
 void sub_E1B(void);
@@ -117,6 +127,11 @@ void sub_030(void) {
   continuation = sub_500;
 }
 
+// 01:00
+bool sub_100(void) {
+  return sub_629();
+}
+
 // 01:02
 void sub_102(void) {
   sub_40E();
@@ -135,11 +150,6 @@ void sub_106(void) {
 // 01:08
 void sub_108(void) {
   sub_E1B();
-}
-
-// 01:00
-bool sub_100(void) {
-  return sub_629();
 }
 
 // 01:0A
@@ -248,7 +258,38 @@ loc_21D:
   sub_11A();
   sub_92D();
 
-  // 02:2C
+  sub_22C();
+  return;
+
+loc_237:
+  BM = 0x5;
+
+  sub_23B();
+  return;
+
+loc_239:
+  sub_306();
+
+  sub_23B();
+}
+
+// 02:04
+void sub_204(void) {
+  SWAP(B, SB);
+  SWAP(A, RAM(B));
+  BL = 0xe;
+  RAM(B) &= ~BIT(3);
+  A = 0x1;
+  writeIO(0xe, 0x1);
+  BL = 0x8;
+  A = 0x2;
+  writeIO(0x8, 0x2);
+
+  sub_23B();
+}
+
+// 02:2C
+void sub_22C(void) {
   B = 0x59;
   C = 1;
   if (!(RAM(0x59) & BIT(0)))
@@ -259,16 +300,12 @@ loc_21D:
   if (BL--)
     SWAP(A, X);
   sub_C32();
-  goto loc_23B;
 
-loc_237:
-  BM = 0x5;
-  goto loc_23B;
+  sub_23B();
+}
 
-loc_239:
-  sub_306();
-
-loc_23B:
+// 02:3B
+void sub_23B(void) {
   BL = 0x6;
   SWAP(A, RAM(B));
   SWAP(B, SB);
@@ -277,8 +314,17 @@ loc_23B:
 
 // 03:06
 void sub_306(void) {
+  BL = 0xe;
+  A = 0x1;
+  writeIO(0xe, 0x1);
+
   // todo: should we do anything for halt/standby?
-  // notImpl(0x03, 0x06);
+  // HALT = 1;
+
+  if (RAM(B) & BIT(3)) {
+    A = 0x5;
+    writeIO(0xe, 0x5);
+  }
 }
 
 // 03:0B
@@ -560,7 +606,198 @@ void sub_709(void) {
 
 // 07:13
 void sub_713(void) {
-  notImpl(0x07, 0x13);
+  sub_F2F();
+  BL = 0xa;
+  A = 0x4;
+  goto loc_71F;
+
+loc_718:
+  BL = 0x2;
+  A = 0x1;
+  writeIO(0x2, 0x1);
+
+loc_71B:
+  BL = 0xa;
+  A = readIO(0xa);
+  // todo: read upper half into X?
+  A += 0xf;
+  if (A == 0xf)
+    goto loc_738;
+
+loc_71F:
+  writeIO(0xa, A);
+  SWAP(A, BL);
+  BM = 0x4;
+  if (!(RAM(B) & BIT(0)))
+    goto loc_727;
+  sub_C26();
+  goto loc_71B;
+
+loc_727:
+  if (!(RAM(B) & BIT(3)))
+    goto loc_72A;
+  goto loc_71B;
+
+loc_72A:
+  BM = 0x1;
+  sub_C32();
+  B = 0x22;
+  if (!sub_916())
+    goto loc_733;
+  goto loc_71B;
+
+loc_733:
+  sub_91F();
+  BL = 0x3;
+  goto loc_818;
+
+loc_738:
+  BM = 0x5;
+  sub_306();
+
+  sub_22C();
+  return;
+
+loc_800:
+  SWAP(A, RAM(B));
+  if (BL--)
+    SWAP(A, RAM(B));
+  A += 0xf;
+  if (A == 0xf)
+    goto loc_81D;
+  SWAP(A, RAM(B));
+  if (!++BL) abort();
+
+loc_805:
+  if (!(readIO(BL) & BIT(2)))
+    goto loc_423;
+  if (!(readIO(BL) & BIT(3)))
+    goto loc_805;
+  SWAP(B, SB);
+  A = RAM(B);
+  if (++BL)
+    writeIO(0x0, A);
+  A = RAM(B);
+  writeIO(0x0, A);
+  if (++BL)
+    goto loc_817;
+  SWAP(A, BM);
+  A += 0x1;
+  if (A)
+    goto loc_816;
+  A = 0x8;
+
+loc_816:
+  SWAP(A, BM);
+
+loc_817:
+  SWAP(B, SB);
+
+loc_818:
+  SWAP(A, RAM(B));
+  A += 0xf;
+  if (A == 0xf)
+    goto loc_800;
+  SWAP(A, RAM(B));
+  goto loc_805;
+
+loc_81D:
+  sub_900();
+  B = 0x33;
+  goto loc_838;
+
+loc_822:
+  SWAP(A, RAM(B));
+  if (BL--)
+    SWAP(A, RAM(B));
+  A += 0xf;
+  if (A == 0xf)
+    goto loc_718;
+  SWAP(A, RAM(B));
+  if (!++BL) abort();
+
+loc_828:
+  if (!(readIO(BL) & BIT(2)))
+    goto loc_423;
+  if (!(readIO(BL) & BIT(3)))
+    goto loc_828;
+  A = readIO(0x1);
+  SWAP(B, SB);
+  SWAP(A, RAM(B));
+  if (++BL)
+    A = readIO(0x1);
+  SWAP(A, RAM(B));
+  if (++BL)
+    goto loc_837;
+  SWAP(A, BM);
+  BM = 0x8;
+  A += 0x1;
+  if (A)
+    SWAP(A, BM);
+
+loc_837:
+  SWAP(B, SB);
+
+loc_838:
+  SWAP(A, RAM(B));
+  A += 0xf;
+  if (A == 0xf)
+    goto loc_822;
+  SWAP(A, RAM(B));
+  goto loc_828;
+
+// 04:23
+loc_423:
+  BL = 0x2;
+  A = 0x0;
+  writeIO(0x2, 0x0);
+  A = 0x1;
+  writeIO(0x2, 0x1);
+  BL = 0xa;
+  A = readIO(0xa);
+  // todo: read upper half into X?
+  SWAP(A, BL);
+  BM = 0x1;
+  sub_C32();
+  BL = 0x4;
+  if (!(readIO(0x4) & BIT(3)))
+    goto loc_433;
+  A = 0x8;
+  goto loc_434;
+
+loc_433:
+  A = 0x4;
+
+loc_434:
+  SWAP(B, SB);
+  if (++BL)
+    sub_D35();
+  A += RAM(B);
+  SWAP(A, RAM(B));
+  SWAP(B, SB);
+  A = 0x0;
+  writeIO(0x4, 0x0);
+
+  goto loc_71B;
+}
+
+// 09:00
+void sub_900(void) {
+  B = 0xff;
+  if (!(RAM(0xff) & BIT(2))) {
+    sub_909();
+    return;
+  }
+  if (!(RAM(0xff) & BIT(3)))
+    sub_909();
+  sub_106();
+}
+
+// 09:09
+void sub_909(void) {
+  BL = 0x2;
+  A = 0x2;
+  writeIO(0x2, 0x2);
 }
 
 // 09:0D
@@ -572,6 +809,50 @@ void sub_90D(void) {
     while (++X & 0xf)
       ;
   } while (++A);
+}
+
+// 09:16
+bool sub_916(void) {
+  SWAP(B, SB);
+  if (!(RAM(B) & BIT(0x3)))
+    goto loc_91A;
+  return true;
+
+loc_91A:
+  if (!(RAM(B) & BIT(0x2))) {
+    sub_922();
+    return false;
+  }
+  sub_C26();
+  return true;
+}
+
+// 09:1F
+void sub_91F(void) {
+  SWAP(B, SB);
+  RAM(B) &= ~BIT(0x3);
+  RAM(B) &= ~BIT(0x2);
+
+  sub_922();
+}
+
+// 09:22
+void sub_922(void) {
+  A = RAM(B);
+  SWAP(B, SB);
+  SWAP(A, RAM(B));
+  if (++BL)
+    SWAP(B, SB);
+  if (++BL)
+    A = RAM(B);
+  sub_D35();
+  SWAP(B, SB);
+  SWAP(A, RAM(B));
+  BM ^= 0x1;
+  if (BL--)
+    return;
+
+  abort();
 }
 
 // 09:2D
@@ -804,6 +1085,20 @@ bool sub_C10(void) {
     A = 0x2;
   sub_120();
   return (++BL == 0);
+}
+
+// 0C:26
+void sub_C26(void) {
+  while (!(readIO(0x3) & BIT(3)))
+    writeIO(0x4, 0x0);
+
+  writeIO(0x2, 0x3);
+  A = 0x1;
+  writeIO(0x2, 0x1);
+  BL = 0x3;
+
+  while (!(readIO(0x3) & BIT(3)))
+    ;
 }
 
 // 0C:32

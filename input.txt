@@ -52,3 +52,10 @@
 #0
 # Joybus command
 #0x01
+
+# P7
+#8 4
+# command
+#0x00
+# A
+#7
