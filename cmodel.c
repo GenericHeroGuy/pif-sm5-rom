@@ -15,10 +15,6 @@
 
 FILE* input;
 
-typedef void (*continuation_t)(void);
-
-void (*continuation)(void);
-
 bool IFA = 0;
 
 void checkInterrupt(void);
@@ -67,7 +63,6 @@ void memZero(u8 address);
 void sub_22C(void);
 void interruptEpilog(void);
 void halt(void);
-void sub_30C(void);
 void cicCompare(void);
 void signalError(void);
 void memSwapRanges(void);
@@ -145,10 +140,12 @@ void start(void) {
 
 // 00:30
 void sub_030(void) {
-  B = PIF_CMD_U;
-  RAM(PIF_CMD_U) |= BIT(PIF_CMD_U_CHECKSUM_ACK);
-  IME = 1;
-  continuation = sub_500;
+  for (;;) {
+    B = PIF_CMD_U;
+    RAM(PIF_CMD_U) |= BIT(PIF_CMD_U_CHECKSUM_ACK);
+    IME = 1;
+    sub_500();
+  }
 }
 
 // 01:16
@@ -291,31 +288,28 @@ void halt(void) {
 
 // 03:0B
 void sub_30B(void) {
-  IME = 1;
-  static bool checkOnce;  // todo: remove, for testing purposes
-  if (!checkOnce) {
-    checkOnce = true;
-    IFA = 1;
-    checkInterrupt();
-  }
-
-  sub_30C();
-}
-
-// 03:0C
-void sub_30C(void) {
   for (;;) {
-    if (!(RAM(STATUS) & BIT(STATUS_TERMINATE_RECV))) {
-      continuation = cicReset;
-      return;
-    }
-    if (RAM(STATUS) & BIT(STATUS_CHALLENGE)) {
-      RAM(STATUS) &= ~BIT(STATUS_CHALLENGE);
-      continuation = cicChallenge;
-      return;
+    IME = 1;
+    static bool checkOnce;  // todo: remove, for testing purposes
+    if (!checkOnce) {
+      checkOnce = true;
+      IFA = 1;
+      checkInterrupt();
     }
 
-    cicCompare();
+    for (;;) {
+      if (!(RAM(STATUS) & BIT(STATUS_TERMINATE_RECV))) {
+        cicReset();
+        return;
+      }
+      if (RAM(STATUS) & BIT(STATUS_CHALLENGE)) {
+        RAM(STATUS) &= ~BIT(STATUS_CHALLENGE);
+        cicChallenge();
+        break;
+      }
+
+      cicCompare();
+    }
   }
 }
 
@@ -455,14 +449,17 @@ void sub_500(void) {
 
 // 05:2D
 void sub_52D(void) {
-  B = PIF_CMD_L;
+  for (;;) {
+    B = PIF_CMD_L;
 
-  readCommand();
-  if (!(RAM(PIF_CMD_L) & BIT(PIF_CMD_L_TERMINATE))) {
-    // handle command other than 'terminate boot process'
-    continuation = sub_700;
-    return;
+    readCommand();
+    if (RAM(PIF_CMD_L) & BIT(PIF_CMD_L_TERMINATE))
+      break;
+
+    sub_700();
   }
+
+  // terminate boot process
   IME = 0;
   memZero(PIF_CMD_U);
   B = STATUS;
@@ -471,7 +468,7 @@ void sub_52D(void) {
   RAM(STATUS) |= BIT(STATUS_TERMINATE_RECV);
   IFB = 0;
 
-  continuation = sub_30B;
+  sub_30B();
 }
 
 // 06:00
@@ -513,8 +510,6 @@ loc_618:
   A = 8;
   writeIO(8, 8);
   C = 1;
-
-  continuation = sub_030;
 }
 
 // 06:29
@@ -539,7 +534,6 @@ bool increment8(void) {
 void sub_700(void) {
   B = 0x4f;
   if (!increment8() || !increment8() || !increment8()) {
-    continuation = sub_52D;
     return;
   }
 
@@ -1066,8 +1060,6 @@ void cicChallenge(void) {
   BM = 5;
   halt();
   initSB();
-
-  continuation = sub_30B;
 }
 
 void sub_D1B(void) {
@@ -1287,13 +1279,7 @@ void checkInterrupt(void) {
   if (IFA && (RE & BIT(0)) && IME) {
     IFA = 0;
     IME = 0;
-    continuation_t saved = continuation;
-    continuation = NULL;
     interruptA();
-    if (continuation)
-      abort();
-    continuation = saved;
-    return;
   }
 }
 
@@ -1351,9 +1337,5 @@ int main(int argc, char* argv[]) {
   } else {
     input = stdin;
   }
-  continuation = start;
-  while (continuation) {
-    checkInterrupt();
-    (*continuation)();
-  }
+  start();
 }
