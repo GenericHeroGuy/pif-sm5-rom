@@ -48,6 +48,7 @@ r4 ram[256];
     a = b;         \
     b = c;         \
   } while (0)
+#define SPIN(n)
 
 u8 readIO(u8 port);
 void writeIO(u8 port, u8 value);

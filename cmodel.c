@@ -1,5 +1,6 @@
 #include "cmodel.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -22,6 +23,39 @@ bool IFA = 0;
 
 void checkInterrupt(void);
 
+enum {
+  PORT_CIC = 5,
+  REG_INT_EN = 0xe,
+};
+
+enum {
+  CIC_SEED_BUF = 0x1a,
+  CIC_SEED = 0x1c,
+  CIC_SEED_END = 0x20,
+  OSINFO = 0x1b,
+  OSINFO_RESET = 1,
+  OSINFO_VERSION = 2,
+  OSINFO_64DD = 3,
+  CIC_CHECKSUM_BUF = 0x20,
+  CIC_CHECKSUM = 0x24,
+  CIC_CHECKSUM_END = 0x30,
+  PIF_CHECKSUM = 0x34,
+  PIF_CHECKSUM_END = 0x40,
+  STATUS = 0x5e,
+  STATUS_CHALLENGE = 1,
+  STATUS_TERMINATE_RECV = 3,
+  PIF_CMD_U = 0xfe,
+  PIF_CMD_U_LOCKOUT = 0,
+  PIF_CMD_U_CHECKSUM = 1,
+  PIF_CMD_U_CLEAR = 2,
+  PIF_CMD_U_CHECKSUM_ACK = 3,
+  PIF_CMD_L = 0xff,
+  PIF_CMD_L_JOYBUS = 0,
+  PIF_CMD_L_CHALLENGE = 1,
+  PIF_CMD_L_2 = 2,
+  PIF_CMD_L_TERMINATE = 3,
+};
+
 // The only non-code data in the ROM, taken from 04:00.
 const u8 rom[] = {
     0x19, 0x4a, 0xf1, 0x88, 0xb5, 0x5a, 0x71, 0xc3,
@@ -29,91 +63,81 @@ const u8 rom[] = {
 };
 
 void sub_030(void);
-void sub_10A(void);
-void sub_10C(void);
-bool sub_10E(void);
-void sub_110(void);
-void sub_116(void);
+void memZero(u8 address);
 void sub_22C(void);
-void sub_23B(void);
-void sub_306(void);
-void sub_339(void);
-void sub_40E(void);
-void sub_414(void);
+void interruptEpilog(void);
+void halt(void);
+void sub_30C(void);
+void cicCompare(void);
+void signalError(void);
+void memSwapRanges(void);
+void memSwap(u8 address);
 void sub_500(void);
 void sub_52D(void);
-void sub_600(void);
-bool sub_629(void);
+void cicReset(void);
+bool increment8(void);
 void sub_700(void);
 void sub_709(void);
 void sub_713(void);
 void sub_71B(void);
 void sub_900(void);
 void sub_909(void);
-void sub_90D(void);
+void spin256(void);
 bool sub_916(void);
 void sub_91F(void);
 void sub_922(void);
 void sub_92D(void);
-bool sub_C00(void);
-bool sub_C10(void);
+void cicReadNibble(u8 address);
+void cicWriteNibble(u8 address);
 void sub_C26(void);
 void sub_C32(void);
-void sub_D00(void);
+void cicChallenge(void);
 void sub_D1B(void);
-void sub_D31(void);
+void initSB(void);
 void sub_D35(void);
-void sub_E00(void);
-void sub_E15(void);
+void cicChecksum(void);
+void cicDecode(u8 address);
 void sub_E1B(void);
 void sub_F00(void);
 void sub_F1B(void);
 void sub_F2F(void);
 
 // 00:00
-void sub_000(void) {
-  writeIO(0x5, 1);
-  writeIO(0xe, 1);
+void start(void) {
+  writeIO(PORT_CIC, 1);
+  writeIO(REG_INT_EN, 1);
 
-  sub_110();
+  initSB();
 
-  B = 0x34;
-  sub_116();
+  memZero(PIF_CHECKSUM);
 
-  B = 0x5e;
-  sub_10E();
-  switch (RAM(0x5e)) {
-    case 0x1:
-      RAM(0x5e) = 0x4;
+  cicReadNibble(STATUS);
+  switch (RAM(STATUS)) {
+    case 1:
+      RAM(STATUS) = BIT(OSINFO_VERSION);
       break;
-    case 0x9:
-      RAM(0x5e) = 0xc;
+    case 9:
+      RAM(STATUS) = BIT(OSINFO_VERSION) | BIT(OSINFO_64DD);
       break;
     default:
-      sub_10C();
-      break;  // fatal error
+      signalError();
+      break;
   }
 
-  B = 0x80;
-  do {
-    sub_116();
-  } while (++BM);
+  for (u8 address = 0x80; address != 0; address += 0x10)
+    memZero(address);
 
-  B = 0x1a;
-  while (!sub_10E())
-    ;  // stops when B wraps to 0x10
+  for (u8 address = CIC_SEED_BUF; address < CIC_SEED_END; ++address)
+    cicReadNibble(address);
 
-  BL = 0xa;
-  sub_10A();
-  BL = 0xa;
-  sub_10A();
+  cicDecode(CIC_SEED_BUF);
+  cicDecode(CIC_SEED_BUF);
 
-  A = RAM(0x5e);
-  RAM(0x5e) &= ~BIT(1);
-  RAM(0x5e) &= ~BIT(3);
-  SWAP(A, RAM(0x1b));
+  u8 a = RAM(STATUS);
+  RAM(STATUS) &= ~BIT(STATUS_CHALLENGE);
+  RAM(STATUS) &= ~BIT(STATUS_TERMINATE_RECV);
+  RAM(OSINFO) = a;
 
-  B = 0x1a;
   C = 0;
 
   sub_030();
@@ -121,110 +145,49 @@ void sub_000(void) {
 
 // 00:30
 void sub_030(void) {
-  B = 0xfe;
-  RAM(0xfe) |= BIT(3);
+  B = PIF_CMD_U;
+  RAM(PIF_CMD_U) |= BIT(PIF_CMD_U_CHECKSUM_ACK);
   IME = 1;
   continuation = sub_500;
 }
 
-// 01:00
-bool sub_100(void) {
-  return sub_629();
-}
-
-// 01:02
-void sub_102(void) {
-  sub_40E();
-}
-
-// 01:04
-bool sub_104(void) {
-  return sub_C10();
-}
-
-// 01:06
-void sub_106(void) {
-  sub_90D();
-}
-
-// 01:08
-void sub_108(void) {
-  sub_E1B();
-}
-
-// 01:0A
-void sub_10A(void) {
-  sub_E15();
-}
-
-// 01:0C
-void sub_10C(void) {
-  sub_339();
-}
-
-// 01:0E
-bool sub_10E(void) {
-  return sub_C00();
-}
-
-// 01:10
-void sub_110(void) {
-  sub_D31();
-}
-
-// 01:12
-// write 0xfb at B and zero rest of segment
-void sub_112(void) {
-  RAM(B) = 0xf;
-  ++BL;
-  RAM(B) = 0xb;
-  ++BL;
-  sub_116();
-}
-
 // 01:16
 // zero memory from B to end of segment
-void sub_116(void) {
+void memZero(u8 address) {
   do {
-    A = 0;
-    SWAP(A, RAM(B));
-  } while (++BL);
+    RAM(address) = 0;
+  } while (++address & 0xf);
 }
 
 // 01:1A
 // fill [0x40..0x45] with 8
-void sub_11A(void) {
-  B = 0x45;
-  do {
-    A = 8;
-    SWAP(A, RAM(B));
-  } while (BL--);
+void memFill8(void) {
+  for (u8 address = 0x45; address >= 0x40; --address)
+    RAM(address) = 8;
 }
 
 // 01:20
-void sub_120(void) {
-  writeIO(0x5, A);
-  for (A = 0xb; A; ++A)
-    ;  // spin
-  writeIO(0x5, 0x1);
-  for (A = 0xc; A; ++A)
-    ;  // spin
+void cicWriteBit(bool value) {
+  writeIO(PORT_CIC, value | 2);
+  SPIN(5);
+  writeIO(PORT_CIC, 1);
+  SPIN(4);
 }
 
 // 01:2A
-// read bit from CIC into C
-void sub_12A(void) {
-  writeIO(5, 3);
-  for (A = 0xb; A; ++A)
-    ;  // spin
-  C = readIO(5) & BIT(3);
-  writeIO(5, 1);
-  for (A = 0xc; A; ++A)
-    ;  // spin
+// read bit from CIC
+bool cicReadBit(void) {
+  writeIO(PORT_CIC, 3);
+  SPIN(5);
+  bool c = readIO(PORT_CIC) & BIT(3);
+  writeIO(PORT_CIC, 1);
+  SPIN(4);
+  return c;
 }
 
 // 02:00
-void sub_200(void) {
+void interruptA(void) {
+  assert(SB == 0x56);
   SWAP(B, SB);
   SWAP(A, RAM(B));
   ++BL;
@@ -233,59 +196,56 @@ void sub_200(void) {
     goto loc_21D;
   if (!(readIO(BL) & BIT(2)))
     goto loc_239;
-  B = 0xff;
+  B = PIF_CMD_L;
   readCommand();
-  if (!(RAM(0xff) & BIT(1))) {
+  if (!(RAM(PIF_CMD_L) & BIT(PIF_CMD_L_CHALLENGE))) {
     sub_713();
     return;
   }
-  B = 0x5e;
-  if (!(RAM(0x5e) & BIT(3)))
+  B = STATUS;
+  if (!(RAM(STATUS) & BIT(STATUS_TERMINATE_RECV)))
     goto loc_239;
   sub_709();
   return;
 
 loc_21D:
-  sub_306();
-  B = 0xff;
+  halt();
+  B = PIF_CMD_L;
   readCommand();
-  if (!(RAM(0xff) & BIT(0)))
+  if (!(RAM(PIF_CMD_L) & BIT(PIF_CMD_L_JOYBUS)))
     goto loc_237;
-  RAM(B) &= ~BIT(0);
+  RAM(PIF_CMD_L) &= ~BIT(PIF_CMD_L_JOYBUS);
   sub_F2F();
   B = 0x10;
   SWAP(B, SB);
-  sub_11A();
+  memFill8();
   sub_92D();
 
   sub_22C();
   return;
 
 loc_237:
-  BM = 0x5;
+  BM = 5;
 
-  sub_23B();
+  interruptEpilog();
   return;
 
 loc_239:
-  sub_306();
+  halt();
 
-  sub_23B();
+  interruptEpilog();
 }
 
 // 02:04
-void sub_204(void) {
+void interruptB(void) {
+  assert(SB == 0x56);
   SWAP(B, SB);
-  SWAP(A, RAM(B));
-  BL = 0xe;
-  RAM(B) &= ~BIT(3);
-  A = 0x1;
-  writeIO(0xe, 0x1);
-  BL = 0x8;
-  A = 0x2;
-  writeIO(0x8, 0x2);
+  SWAP(A, RAM(0x56));
+  RAM(STATUS) &= ~BIT(STATUS_TERMINATE_RECV);
+  writeIO(REG_INT_EN, 1);
+  writeIO(8, 2);
 
-  sub_23B();
+  interruptEpilog();
 }
 
 // 02:2C
@@ -301,29 +261,31 @@ void sub_22C(void) {
     SWAP(A, X);
   sub_C32();
 
-  sub_23B();
+  interruptEpilog();
 }
 
 // 02:3B
-void sub_23B(void) {
-  BL = 0x6;
-  SWAP(A, RAM(B));
+void interruptEpilog(void) {
+  assert(BM == 0x5);
+  BL = 6;
+  SWAP(A, RAM(0x56));
   SWAP(B, SB);
   IME = 1;
 }
 
 // 03:06
-void sub_306(void) {
+void halt(void) {
+  assert(BM == 5);
   BL = 0xe;
-  A = 0x1;
-  writeIO(0xe, 0x1);
+  A = 1;
+  writeIO(REG_INT_EN, 1);
 
   // todo: should we do anything for halt/standby?
   // HALT = 1;
 
-  if (RAM(B) & BIT(3)) {
-    A = 0x5;
-    writeIO(0xe, 0x5);
+  if (RAM(STATUS) & BIT(STATUS_TERMINATE_RECV)) {
+    A = 5;
+    writeIO(REG_INT_EN, 5);
   }
 }
 
@@ -337,72 +299,75 @@ void sub_30B(void) {
     checkInterrupt();
   }
 
-loc_30C:
-  B = 0x5e;
-  if (!(RAM(0x5e) & BIT(3))) {
-    continuation = sub_600;
-    return;
-  }
-  if (!(RAM(0x5e) & BIT(1)))
-    goto loc_316;
-  RAM(B) &= ~BIT(1);
-  continuation = sub_D00;
-  return;
+  sub_30C();
+}
 
-loc_316:
-  A = 0x2;
-  sub_120();
-  A = 0x2;
-  sub_120();
-  BM = 0x6;
-  sub_108();
-  sub_108();
-  sub_108();
-  BM = 0x7;
-  sub_108();
-  sub_108();
-  sub_108();
+// 03:0C
+void sub_30C(void) {
+  for (;;) {
+    if (!(RAM(STATUS) & BIT(STATUS_TERMINATE_RECV))) {
+      continuation = cicReset;
+      return;
+    }
+    if (RAM(STATUS) & BIT(STATUS_CHALLENGE)) {
+      RAM(STATUS) &= ~BIT(STATUS_CHALLENGE);
+      continuation = cicChallenge;
+      return;
+    }
+
+    cicCompare();
+  }
+}
+
+void cicCompare(void) {
+  cicWriteBit(0);
+  cicWriteBit(0);
+  BM = 6;
+  sub_E1B();
+  sub_E1B();
+  sub_E1B();
+  BM = 7;
+  sub_E1B();
+  sub_E1B();
+  sub_E1B();
   B = 0x77;
   A = RAM(0x77);
   if (A)
     A += 0xf;
-  A += 0x1;
+  A += 1;
   if (A)
     SWAP(A, BL);
 
 loc_329:
-  BM = 0x6;
-  A = 0x3;
-  if (!(RAM(B) & BIT(0)))
-    A = 0x2;
-  sub_120();
-  BM = 0x7;
-  sub_12A();
+  BM = 6;
+  cicWriteBit(RAM(B) & BIT(0));
+  BM = 7;
+  C = cicReadBit();
   if (C == 0)
     goto loc_337;
   if (!(RAM(B) & BIT(0))) {
-    sub_339();
+    signalError();
     return;
   }
 
 loc_334:
   if (++BL)
     goto loc_329;
-  goto loc_30C;
+  return;
 
 loc_337:
   if (!(RAM(B) & BIT(0)))
     goto loc_334;
 
-  sub_339();
+  signalError();
 }
 
 // 03:39
 // disable interrupts and strobe R8 forever
-void sub_339(void) {
+void signalError(void) {
   IME = 0;
   do {
-    writeIO(0x8, A);
+    writeIO(8, A);
     A = ~A;
     fatalError();
   } while (1);
@@ -410,77 +375,79 @@ void sub_339(void) {
 
 // 04:0E
 // swap internal and external memory
-void sub_40E(void) {
-  B = 0xcb;
-  sub_414();  // swap [0x1b..0x1f] <-> [0xcb..0xcf]
-  B = 0xe4;
-  sub_414();  // swap [0x34..0x3f] <-> [0xe4..0xef]
+void memSwapRanges(void) {
+  memSwap(OSINFO + 0xb0);        // swap [0x1b..0x1f] <-> [0xcb..0xcf]
+  memSwap(PIF_CHECKSUM + 0xb0);  // swap [0x34..0x3f] <-> [0xe4..0xef]
 }
 
 // 04:14
-void sub_414(void) {
+void memSwap(u8 address) {
   do {
-    SWAP(RAM(B), RAM(B - 0xB0));
-  } while (++BL);
-  B = 0xfe;
+    SWAP(RAM(address), RAM(address - 0xb0));
+  } while (++address & 0xf);
 }
 
 // 05:00
 void sub_500(void) {
   IME = 0;
-  sub_102();
-  sub_116();  // zero [0xfe..0xff]
-  BL = 0xe;
+
+  memSwapRanges();
+  memZero(PIF_CMD_U);
+  B = PIF_CMD_U;
+
   IME = 1;
 
   // wait for rom lockout bit of PIF status byte to become set
   do {
     readCommand();
-  } while (!(RAM(0xfe) & BIT(0)));
+  } while (!(RAM(PIF_CMD_U) & BIT(PIF_CMD_U_LOCKOUT)));
+
   IME = 0;
-  A = 0x1;
-  BL = 0x6;
-  writeIO(0x6, 0x1);
-  BL = 0x2;
-  A = 0x1;
-  writeIO(0x2, 0x1);
-  sub_11A();
-  B = 0xfe;
+
+  writeIO(6, 1);
+  writeIO(2, 1);
+  memFill8();
+  B = PIF_CMD_U;
+
   IME = 1;
 
   // wait for checksum verification bit
   do {
     readCommand();
-  } while (!(RAM(0xfe) & BIT(1)));
+  } while (!(RAM(PIF_CMD_U) & BIT(PIF_CMD_U_CHECKSUM)));
+
   IME = 0;
-  sub_102();
-  RAM(0xfe) |= BIT(3);
+
+  memSwapRanges();
+  B = PIF_CMD_U;
+  RAM(PIF_CMD_U) |= BIT(PIF_CMD_U_CHECKSUM_ACK);
+
   IME = 1;
 
   // wait for clear pif ram bit
   do {
     readCommand();
-  } while (!(RAM(0xfe) & BIT(2)));
+  } while (!(RAM(PIF_CMD_U) & BIT(PIF_CMD_U_CLEAR)));
+
   IME = 0;
-  A = 0x0;
-  SWAP(A, RAM(B));
-  if (C == 0)
-    sub_E00();
-  B = 0x34;
+
+  RAM(PIF_CMD_U) = 0;
+  if (C == 0)  // only run on cold boot, not on reset
+    cicChecksum();
 
   // compare checksum
-  do {
-    A = 0x0;
-    SWAP(A, RAM(B));
-    BM ^= 0x1;
-    if (A != RAM(B)) {
-      sub_10C();
+  for (u8 i = 0; i < 0xc; ++i) {
+    u8 a = RAM(PIF_CHECKSUM + i);
+    RAM(PIF_CHECKSUM + i) = 0;
+    if (a != RAM(CIC_CHECKSUM + i)) {
+      signalError();
     }
-    BM = 0x3;
-  } while (++BL);
+  }
 
-  B = 0x4a;
-  sub_112();
+  RAM(0x4a) = 0xf;
+  RAM(0x4b) = 0xb;
+  memZero(0x4c);
+
   IME = 1;
 
   sub_52D();
@@ -488,117 +455,103 @@ void sub_500(void) {
 
 // 05:2D
 void sub_52D(void) {
-  B = 0xff;
+  B = PIF_CMD_L;
 
   readCommand();
-  if (!(RAM(0xff) & BIT(3))) {
+  if (!(RAM(PIF_CMD_L) & BIT(PIF_CMD_L_TERMINATE))) {
     // handle command other than 'terminate boot process'
     continuation = sub_700;
     return;
   }
   IME = 0;
-  BL = 0xe;
-  sub_116();  // zero [0xfe..0xff]
-  B = 0x5e;
-  A = 0x5;
-  writeIO(0xe, 0x5);
-  RAM(0x5e) |= BIT(3);
+  memZero(PIF_CMD_U);
+  B = STATUS;
+  A = 5;
+  writeIO(REG_INT_EN, 5);
+  RAM(STATUS) |= BIT(STATUS_TERMINATE_RECV);
   IFB = 0;
 
   continuation = sub_30B;
 }
 
 // 06:00
-void sub_600(void) {
-  A = 0x3;
-  sub_120();
-  A = 0x3;
-  sub_120();
-  BL = 0x5;
-  A = 0x3;
-  writeIO(0x5, 0x3);
-  B = 0x0c;
-  sub_116();
+void cicReset(void) {
+  cicWriteBit(1);
+  cicWriteBit(1);
+  BL = 5;
+  A = 3;
+  writeIO(PORT_CIC, 3);
+  memZero(0x0c);
 
 loc_60A:
-  B = 0xfe;
-  RAM(0xfe) |= BIT(3);
+  B = PIF_CMD_U;
+  RAM(PIF_CMD_U) |= BIT(PIF_CMD_U_CHECKSUM_ACK);
   B = 0x05;
-  if (!(readIO(0x5) & BIT(3)))
+  if (!(readIO(PORT_CIC) & BIT(3)))
     goto loc_618;
   BL = 0xf;
-  if (!sub_100() || !sub_100())
+  if (!increment8() || !increment8())
     goto loc_60A;
-  sub_10C();
-  BL = 0x5;
+  signalError();
+  BL = 5;
 
 loc_618:
-  A = 0x1;
-  writeIO(0x5, 0x1);
-  BL = 0x8;
-  A = 0x0;
+  A = 1;
+  writeIO(PORT_CIC, 1);
+  BL = 8;
+  A = 0;
 
-  while (!(readIO(0x8) & BIT(3)))
+  while (!(readIO(8) & BIT(3)))
     ;
 
   IME = 0;
-  BL = 0x6;
-  writeIO(0x6, A);
-  A = 0x9;
-  BL = 0x8;
-  writeIO(0x8, 0x9);
-  A = 0x8;
-  writeIO(0x8, 0x8);
+  BL = 6;
+  writeIO(6, A);
+  A = 9;
+  BL = 8;
+  writeIO(8, 9);
+  A = 8;
+  writeIO(8, 8);
   C = 1;
 
   continuation = sub_030;
 }
 
 // 06:29
-bool sub_629(void) {
-  SWAP(A, RAM(B));
-  A += 0x1;
-  if (A)
-    goto loc_632;
-  SWAP(A, RAM(B));
-  if (BL--)
-    SWAP(A, RAM(B));
-  A += 0x1;
-  if (A)
-    goto loc_634;
-  SWAP(A, RAM(B));
-  if (BL--)
-    return true;
-
-loc_632:
-  SWAP(A, RAM(B));
-  return false;
-
-loc_634:
-  SWAP(A, RAM(B));
-  if (++BL)
+bool increment8(void) {
+  RAM(B) += 1;
+  if (RAM(B)) {
     return false;
+  }
+  BL--;
 
-  abort();
+  RAM(B) += 1;
+  if (RAM(B)) {
+    ++BL;
+    return false;
+  }
+  BL--;
+
+  return true;
 }
 
 // 07:00
 void sub_700(void) {
-  BM = 0x4;
-  if (!sub_100() || !sub_100() || !sub_100()) {
+  B = 0x4f;
+  if (!increment8() || !increment8() || !increment8()) {
     continuation = sub_52D;
     return;
   }
 
-  sub_10C();
+  signalError();
 
   abort();
 }
 
 // 07:09
 void sub_709(void) {
-  RAM(0xff) &= ~BIT(1);
-  RAM(0x5e) |= BIT(1);
+  RAM(PIF_CMD_L) &= ~BIT(PIF_CMD_L_CHALLENGE);
+  RAM(STATUS) |= BIT(STATUS_CHALLENGE);
   B = 0x56;
   SWAP(A, RAM(0x56));
   SWAP(B, SB);
@@ -608,13 +561,13 @@ void sub_709(void) {
 void sub_713(void) {
   sub_F2F();
   BL = 0xa;
-  A = 0x4;
+  A = 4;
   goto loc_71F;
 
 loc_718:
-  BL = 0x2;
-  A = 0x1;
-  writeIO(0x2, 0x1);
+  BL = 2;
+  A = 1;
+  writeIO(2, 1);
 
 loc_71B:
   BL = 0xa;
@@ -627,7 +580,7 @@ loc_71B:
 loc_71F:
   writeIO(0xa, A);
   SWAP(A, BL);
-  BM = 0x4;
+  BM = 4;
   if (!(RAM(B) & BIT(0)))
     goto loc_727;
   sub_C26();
@@ -639,7 +592,7 @@ loc_727:
   goto loc_71B;
 
 loc_72A:
-  BM = 0x1;
+  BM = 1;
   sub_C32();
   B = 0x22;
   if (!sub_916())
@@ -648,12 +601,12 @@ loc_72A:
 
 loc_733:
   sub_91F();
-  BL = 0x3;
+  BL = 3;
   goto loc_818;
 
 loc_738:
-  BM = 0x5;
-  sub_306();
+  BM = 5;
+  halt();
 
   sub_22C();
   return;
@@ -666,7 +619,8 @@ loc_800:
   if (A == 0xf)
     goto loc_81D;
   SWAP(A, RAM(B));
-  if (!++BL) abort();
+  if (!++BL)
+    abort();
 
 loc_805:
   if (!(readIO(BL) & BIT(2)))
@@ -676,16 +630,16 @@ loc_805:
   SWAP(B, SB);
   A = RAM(B);
   if (++BL)
-    writeIO(0x0, A);
+    writeIO(0, A);
   A = RAM(B);
-  writeIO(0x0, A);
+  writeIO(0, A);
   if (++BL)
     goto loc_817;
   SWAP(A, BM);
-  A += 0x1;
+  A += 1;
   if (A)
     goto loc_816;
-  A = 0x8;
+  A = 8;
 
 loc_816:
   SWAP(A, BM);
@@ -714,24 +668,25 @@ loc_822:
   if (A == 0xf)
     goto loc_718;
   SWAP(A, RAM(B));
-  if (!++BL) abort();
+  if (!++BL)
+    abort();
 
 loc_828:
   if (!(readIO(BL) & BIT(2)))
     goto loc_423;
   if (!(readIO(BL) & BIT(3)))
     goto loc_828;
-  A = readIO(0x1);
+  A = readIO(1);
   SWAP(B, SB);
   SWAP(A, RAM(B));
   if (++BL)
-    A = readIO(0x1);
+    A = readIO(1);
   SWAP(A, RAM(B));
   if (++BL)
     goto loc_837;
   SWAP(A, BM);
-  BM = 0x8;
-  A += 0x1;
+  BM = 8;
+  A += 1;
   if (A)
     SWAP(A, BM);
 
@@ -748,25 +703,25 @@ loc_838:
 
 // 04:23
 loc_423:
-  BL = 0x2;
-  A = 0x0;
-  writeIO(0x2, 0x0);
-  A = 0x1;
-  writeIO(0x2, 0x1);
+  BL = 2;
+  A = 0;
+  writeIO(2, 0);
+  A = 1;
+  writeIO(2, 1);
   BL = 0xa;
   A = readIO(0xa);
   // todo: read upper half into X?
   SWAP(A, BL);
-  BM = 0x1;
+  BM = 1;
   sub_C32();
-  BL = 0x4;
-  if (!(readIO(0x4) & BIT(3)))
+  BL = 4;
+  if (!(readIO(4) & BIT(3)))
     goto loc_433;
-  A = 0x8;
+  A = 8;
   goto loc_434;
 
 loc_433:
-  A = 0x4;
+  A = 4;
 
 loc_434:
   SWAP(B, SB);
@@ -775,51 +730,48 @@ loc_434:
   A += RAM(B);
   SWAP(A, RAM(B));
   SWAP(B, SB);
-  A = 0x0;
-  writeIO(0x4, 0x0);
+  A = 0;
+  writeIO(4, 0);
 
   goto loc_71B;
 }
 
 // 09:00
 void sub_900(void) {
-  B = 0xff;
-  if (!(RAM(0xff) & BIT(2))) {
+  B = PIF_CMD_L;
+  if (!(RAM(PIF_CMD_L) & BIT(PIF_CMD_L_2))) {
     sub_909();
     return;
   }
-  if (!(RAM(0xff) & BIT(3)))
+  if (!(RAM(PIF_CMD_L) & BIT(PIF_CMD_L_TERMINATE)))
     sub_909();
-  sub_106();
+  spin256();
 }
 
 // 09:09
 void sub_909(void) {
-  BL = 0x2;
-  A = 0x2;
-  writeIO(0x2, 0x2);
+  BL = 2;
+  A = 2;
+  writeIO(2, 2);
 }
 
 // 09:0D
-void sub_90D(void) {
-  // spin
+void spin256(void) {
   A = 0;
-  u8 X = 0;
   do {
-    while (++X & 0xf)
-      ;
+    SPIN(16);
   } while (++A);
 }
 
 // 09:16
 bool sub_916(void) {
   SWAP(B, SB);
-  if (!(RAM(B) & BIT(0x3)))
+  if (!(RAM(B) & BIT(3)))
     goto loc_91A;
   return true;
 
 loc_91A:
-  if (!(RAM(B) & BIT(0x2))) {
+  if (!(RAM(B) & BIT(2))) {
     sub_922();
     return false;
   }
@@ -830,8 +782,8 @@ loc_91A:
 // 09:1F
 void sub_91F(void) {
   SWAP(B, SB);
-  RAM(B) &= ~BIT(0x3);
-  RAM(B) &= ~BIT(0x2);
+  RAM(B) &= ~BIT(3);
+  RAM(B) &= ~BIT(2);
 
   sub_922();
 }
@@ -848,7 +800,7 @@ void sub_922(void) {
   sub_D35();
   SWAP(B, SB);
   SWAP(A, RAM(B));
-  BM ^= 0x1;
+  BM ^= 1;
   if (BL--)
     return;
 
@@ -866,34 +818,34 @@ loc_92F:
       goto loc_A0E;
     ++BL;
     A = RAM(B);
-    A += 0x1;
+    A += 1;
     if (A)
       goto loc_A03;
   } while (++BL);
 
   SWAP(A, BM);
-  A += 0x1;
+  A += 1;
 
   SWAP(A, BM);
   goto loc_92F;
 
 loc_A03:
-  A += 0x1;
+  A += 1;
   if (!A)
     return;
 
-  A += 0x1;
+  A += 1;
   if (A)
     goto loc_A1F;
   SWAP(B, SB);
-  BM = 0x4;
+  BM = 4;
   RAM(B) |= BIT(0);
-  BM = 0x1;
+  BM = 1;
   SWAP(B, SB);
   goto loc_A14;
 
 loc_A0E:
-  A = 0x0;
+  A = 0;
   if (0 != RAM(B))
     goto loc_A20;
   ++BL;
@@ -904,7 +856,7 @@ loc_A14:
   if (++BL)
     goto loc_A1B;
   SWAP(A, BM);
-  A += 0x1;
+  A += 1;
   if (!A)
     return;
 
@@ -927,7 +879,7 @@ loc_A21:
   SWAP(A, X);
   SWAP(B, SB);
   SWAP(A, RAM(B));
-  BM ^= 0x1;
+  BM ^= 1;
   SWAP(B, SB);
   SWAP(A, BL);
   X = A;
@@ -935,7 +887,7 @@ loc_A21:
   SWAP(A, X);
   SWAP(B, SB);
   SWAP(A, RAM(B));
-  BM ^= 0x1;
+  BM ^= 1;
   if (++BL)
     SWAP(B, SB);
   A = RAM(B);
@@ -946,23 +898,23 @@ loc_A21:
     SWAP(A, X);
   A = RAM(B);
   SWAP(B, SB);
-  BM = 0x4;
+  BM = 4;
   if (BL--)
     RAM(B) &= ~BIT(3);
   if (++BL)
-    BM = 0x1;
+    BM = 1;
   SWAP(A, X);
 
   SWAP(A, RAM(B));
-  BM ^= 0x1;
+  BM ^= 1;
   SWAP(A, X);
   SWAP(A, RAM(B));
-  BM ^= 0x1;
+  BM ^= 1;
   SWAP(B, SB);
   if (++BL)
     goto loc_B0B;
   SWAP(A, BM);
-  A += 0x1;
+  A += 1;
   if (A)
     goto loc_B0A;
   goto loc_B3A;
@@ -979,38 +931,38 @@ loc_B0B:
     SWAP(A, X);
   A = RAM(B);
   SWAP(B, SB);
-  BM = 0x0;
+  BM = 0;
   C = A + RAM(B) >= 0x10;
   A = A + RAM(B);
   SWAP(A, RAM(B));
-  BM ^= 0x1;
+  BM ^= 1;
   SWAP(A, X);
   bool Cy = A + RAM(B) + C >= 0x10;
   A = A + RAM(B) + C;
   C = Cy;
   if (!Cy) {
     SWAP(A, RAM(B));
-    BM ^= 0x1;
+    BM ^= 1;
   }
   A = RAM(B);
   C = A + RAM(B) >= 0x10;
   A = A + RAM(B);
   SWAP(A, RAM(B));
-  BM ^= 0x1;
+  BM ^= 1;
   A = RAM(B);
   Cy = A + RAM(B) + C >= 0x10;
   A = A + RAM(B) + C;
   C = Cy;
   if (!Cy) {
     SWAP(A, RAM(B));
-    BM ^= 0x1;
+    BM ^= 1;
   }
   SWAP(B, SB);
   SWAP(A, BL);
   SWAP(B, SB);
   C = A + RAM(B) + 1 >= 0x10;
   A = A + RAM(B) + 1;
-  BM = 0x1;
+  BM = 1;
   SWAP(B, SB);
   SWAP(A, BL);
   SWAP(A, BM);
@@ -1028,7 +980,7 @@ loc_B30:
   SWAP(B, SB);
 
 loc_B33:
-  A = 0x5;
+  A = 5;
   if (5 == BL)
     return;
   SWAP(B, SB);
@@ -1039,7 +991,7 @@ loc_B3A:
 
 loc_B3B:
   if (BL--)
-    BM = 0x4;
+    BM = 4;
   RAM(B) &= ~BIT(0);
   RAM(B) |= BIT(3);
 }
@@ -1047,95 +999,73 @@ loc_B3B:
 // 0C:00
 // read nibble from CIC into [B]
 // increments BL, returns true on carry
-bool sub_C00(void) {
-  A = 0xf;
-  SWAP(A, RAM(B));
-  sub_12A();
-  if (C != 1)
-    RAM(B) &= ~BIT(3);
-  sub_12A();
-  if (C != 1)
-    RAM(B) &= ~BIT(2);
-  sub_12A();
-  if (C != 1)
-    RAM(B) &= ~BIT(1);
-  sub_12A();
-  if (C != 1)
-    RAM(B) &= ~BIT(0);
+void cicReadNibble(u8 address) {
+  RAM(address) = 0xf;
+  if (!cicReadBit())
+    RAM(address) &= ~BIT(3);
+  if (!cicReadBit())
+    RAM(address) &= ~BIT(2);
+  if (!cicReadBit())
+    RAM(address) &= ~BIT(1);
+  if (!cicReadBit())
+    RAM(address) &= ~BIT(0);
   C = 0;
-  return (++BL == 0);
 }
 
 // 0C:10
-bool sub_C10(void) {
-  A = 0x3;
-  if (!(RAM(B) & BIT(3)))
-    A = 0x2;
-  sub_120();
-  A = 0x3;
-  if (!(RAM(B) & BIT(2)))
-    A = 0x2;
-  sub_120();
-  A = 0x3;
-  if (!(RAM(B) & BIT(1)))
-    A = 0x2;
-  sub_120();
-  A = 0x3;
-  if (!(RAM(B) & BIT(0)))
-    A = 0x2;
-  sub_120();
-  return (++BL == 0);
+void cicWriteNibble(u8 address) {
+  cicWriteBit(RAM(address) & BIT(3));
+  cicWriteBit(RAM(address) & BIT(2));
+  cicWriteBit(RAM(address) & BIT(1));
+  cicWriteBit(RAM(address) & BIT(0));
 }
 
 // 0C:26
 void sub_C26(void) {
-  while (!(readIO(0x3) & BIT(3)))
-    writeIO(0x4, 0x0);
+  while (!(readIO(3) & BIT(3)))
+    writeIO(4, 0);
 
-  writeIO(0x2, 0x3);
-  A = 0x1;
-  writeIO(0x2, 0x1);
-  BL = 0x3;
+  writeIO(2, 3);
+  A = 1;
+  writeIO(2, 1);
+  BL = 3;
 
-  while (!(readIO(0x3) & BIT(3)))
+  while (!(readIO(3) & BIT(3)))
     ;
 }
 
 // 0C:32
 void sub_C32(void) {
   A = RAM(B);
-  BM ^= 0x1;
+  BM ^= 1;
   SWAP(B, SB);
   SWAP(A, BM);
   SWAP(B, SB);
   A = RAM(B);
-  BM ^= 0x1;
+  BM ^= 1;
   SWAP(B, SB);
   SWAP(A, BL);
   SWAP(B, SB);
 }
 
 // 0D:00
-void sub_D00(void) {
-  A = 0x3;
-  sub_120();
-  A = 0x2;
-  sub_120();
-  B = 0x0a;
-  sub_10E();
-  sub_10E();
+void cicChallenge(void) {
+  cicWriteBit(1);
+  cicWriteBit(0);
+  cicReadNibble(0x0a);
+  cicReadNibble(0x0b);
   B = 0xdd;
   sub_D1B();
-  B = 0x0b;
 
-  while (!sub_100())
+  B = 0x0b;
+  while (!increment8())
     ;
-  sub_12A();
+  C = cicReadBit();
   B = 0xdf;
   sub_D1B();
-  BM = 0x5;
-  sub_306();
-  sub_110();
+  BM = 5;
+  halt();
+  initSB();
 
   continuation = sub_30B;
 }
@@ -1155,15 +1085,19 @@ loc_D1E:
   if (0xd != BL)
     goto loc_D2B;
   SWAP(B, SB);
-  sub_104();
-  if (!sub_104())
+  cicWriteNibble(B);
+  ++BL;
+  cicWriteNibble(B);
+  if (++BL)
     goto loc_D1E;
   goto loc_D2F;
 
 loc_D2B:
   SWAP(B, SB);
-  sub_10E();
-  if (!sub_10E())
+  cicReadNibble(B);
+  ++BL;
+  cicReadNibble(B);
+  if (++BL)
     goto loc_D1E;
 
 loc_D2F:
@@ -1172,9 +1106,8 @@ loc_D2F:
 }
 
 // 0D:31
-void sub_D31(void) {
-  B = 0x56;
-  SWAP(B, SB);
+void initSB(void) {
+  SB = 0x56;
 }
 
 // 0D:35
@@ -1185,38 +1118,37 @@ void sub_D35(void) {
 }
 
 // 0E:00
-void sub_E00(void) {
-  B = 0x1b;
-  RAM(0x1b) |= BIT(1);
+void cicChecksum(void) {
+  B = OSINFO;
+  RAM(OSINFO) |= BIT(OSINFO_RESET);
   sub_F1B();
-  BL = 0x5;
-  A = 0x3;
-  writeIO(0x5, 0x3);
-  sub_106();
-  A = 0x1;
-  writeIO(0x5, 0x1);
-  B = 0x20;
+  BL = 5;
+  A = 3;
+  writeIO(PORT_CIC, 3);
+  spin256();
+  A = 1;
+  writeIO(PORT_CIC, 1);
 
-  while (!sub_10E())
-    ;  // stops when B wraps to 0x20
+  for (u8 address = CIC_CHECKSUM_BUF; address < CIC_CHECKSUM_END; ++address)
+    cicReadNibble(address);
 
-  sub_10A();
-  sub_10A();
-  sub_10A();
-  sub_10A();
+  cicDecode(CIC_CHECKSUM_BUF);
+  cicDecode(CIC_CHECKSUM_BUF);
+  cicDecode(CIC_CHECKSUM_BUF);
+  cicDecode(CIC_CHECKSUM_BUF);
 
   sub_F00();
 }
 
 // 0E:15
-// encode CIC seed or checksum (one round)
-void sub_E15(void) {
-  A = 0xf;
+// decode CIC seed or checksum (one round)
+void cicDecode(u8 address) {
+  u8 a = 0xf;
   do {
-    A = ~A;
-    A += RAM(B);
-    SWAP(A, RAM(B));
-  } while (++BL);
+    u8 b = RAM(address);
+    RAM(address) -= a + 1;
+    a = b;
+  } while (++address & 0xf);
 }
 
 // 0E:1B
@@ -1226,7 +1158,7 @@ void sub_E1B(void) {
 
   do {
     u8 X = A;
-    BL = 0x1;
+    BL = 1;
     A = A + RAM(B) + 1;
     SWAP(A, RAM(B));
     A = RAM(B);
@@ -1248,15 +1180,15 @@ void sub_E1B(void) {
     A += RAM(B);
     SWAP(A, RAM(B));
     ++BL;
-    Cy = A + 0x8 >= 0x10;
-    A += 0x8;
+    Cy = A + 8 >= 0x10;
+    A += 8;
     if (!Cy)
       A += RAM(B);
     SWAP(A, RAM(B));
     ++BL;
 
     do {
-      A += 0x1;
+      A += 1;
       A += RAM(B);
       SWAP(A, RAM(B));
       A = RAM(B);
@@ -1269,14 +1201,14 @@ void sub_E1B(void) {
 // 0F:00
 void sub_F00(void) {
   B = 0x60;
-  A = 0x0;
+  A = 0;
   SWAP(A, RAM(0x60));
   SWAP(B, SB);
   B = 0x62;
   do {
     SWAP(B, SB);
     A = RAM(B);
-    A += 0x1;
+    A += 1;
     if (A)
       SWAP(A, RAM(B));
     SWAP(B, SB);
@@ -1284,42 +1216,40 @@ void sub_F00(void) {
     A = byte & 0xf;
     u8 X = byte >> 4;
     SWAP(A, RAM(B));
-    BM ^= 0x1;
+    BM ^= 1;
     SWAP(A, X);
     SWAP(A, RAM(B));
-    BM ^= 0x1;
+    BM ^= 1;
   } while (++BL);
-  BL = 0x1;
-  sub_104();
-  B = 0x71;
-  sub_104();
-  sub_D31();
+  cicWriteNibble(0x61);
+  cicWriteNibble(0x71);
+  initSB();
 }
 
 // 0F:1B
 void sub_F1B(void) {
   B = 0x69;
-  A = 0x1;
-  writeIO(0x9, 0x1);
+  A = 1;
+  writeIO(9, 1);
 
   do {
-    sub_629();
-    BL = 0x9;
+    increment8();
+    BL = 9;
   } while (!(readIO(9) & BIT(3)));
-  A = 0x0;
-  writeIO(0x9, 0x0);
+  A = 0;
+  writeIO(9, 0);
 
   u8 X = {0};  // todo: confirm the value on entry is unimportant
   SWAP(A, RAM(B));
   BL--;
   SWAP(A, X);
   SWAP(A, RAM(B));
-  BL = 0x1;
+  BL = 1;
   SWAP(A, RAM(B));
-  BM ^= 0x1;
+  BM ^= 1;
   SWAP(A, X);
   SWAP(A, RAM(B));
-  BM ^= 0x1;
+  BM ^= 1;
   // todo: confirm this is equivalent to the above
   // RAM(0x61) = RAM(0x68);
   // RAM(0x71) = RAM(0x69);
@@ -1334,12 +1264,12 @@ void sub_F2F(void) {
   SWAP(A, BM);
   SWAP(B, SB);
   SWAP(A, RAM(0x57));
-  BM ^= 0x1;
+  BM ^= 1;
   SWAP(B, SB);
   SWAP(A, BL);
   SWAP(B, SB);
   SWAP(A, RAM(0x47));
-  BM ^= 0x1;
+  BM ^= 1;
   ++BL;
   u8 X = 0;  // todo: is this an in or out param?
   SWAP(A, X);
@@ -1359,7 +1289,7 @@ void checkInterrupt(void) {
     IME = 0;
     continuation_t saved = continuation;
     continuation = NULL;
-    sub_200();
+    interruptA();
     if (continuation)
       abort();
     continuation = saved;
@@ -1401,8 +1331,8 @@ void readCommand(void) {
   printf("r cmd\n");
   int value = scanValue();
   printf("  %x\n", value);
-  RAM(0xfe) = value >> 4;
-  RAM(0xff) = value & 0xf;
+  RAM(PIF_CMD_U) = value >> 4;
+  RAM(PIF_CMD_L) = value & 0xf;
 }
 
 void fatalError(void) {
@@ -1421,7 +1351,7 @@ int main(int argc, char* argv[]) {
   } else {
     input = stdin;
   }
-  continuation = sub_000;
+  continuation = start;
   while (continuation) {
     checkInterrupt();
     (*continuation)();
