@@ -37,6 +37,8 @@ enum {
   CIC_CHECKSUM_END = 0x30,
   PIF_CHECKSUM = 0x34,
   PIF_CHECKSUM_END = 0x40,
+  BOOT_TIMER = 0x4a,
+  BOOT_TIMER_END = 0x50,
   STATUS = 0x5e,
   STATUS_CHALLENGE = 1,
   STATUS_TERMINATE_RECV = 3,
@@ -58,7 +60,6 @@ const u8 rom[] = {
     0xde, 0x61, 0x10, 0xed, 0x9e, 0x8c, 0x3c, 0x2b,
 };
 
-void sub_030(void);
 void memZero(u8 address);
 void sub_22C(void);
 void interruptEpilog(void);
@@ -67,11 +68,10 @@ void cicCompare(void);
 void signalError(void);
 void memSwapRanges(void);
 void memSwap(u8 address);
-void sub_500(void);
-void sub_52D(void);
+void boot(void);
 void cicReset(void);
 bool increment8(void);
-void sub_700(void);
+void bootTimer(void);
 void sub_709(void);
 void sub_713(void);
 void sub_71B(void);
@@ -135,16 +135,10 @@ void start(void) {
 
   C = 0;
 
-  sub_030();
-}
-
-// 00:30
-void sub_030(void) {
   for (;;) {
-    B = PIF_CMD_U;
     RAM(PIF_CMD_U) |= BIT(PIF_CMD_U_CHECKSUM_ACK);
     IME = 1;
-    sub_500();
+    boot();
   }
 }
 
@@ -287,7 +281,7 @@ void halt(void) {
 }
 
 // 03:0B
-void sub_30B(void) {
+void cicLoop(void) {
   for (;;) {
     IME = 1;
     static bool checkOnce;  // todo: remove, for testing purposes
@@ -382,12 +376,11 @@ void memSwap(u8 address) {
 }
 
 // 05:00
-void sub_500(void) {
+void boot(void) {
   IME = 0;
 
   memSwapRanges();
   memZero(PIF_CMD_U);
-  B = PIF_CMD_U;
 
   IME = 1;
 
@@ -401,7 +394,6 @@ void sub_500(void) {
   writeIO(6, 1);
   writeIO(2, 1);
   memFill8();
-  B = PIF_CMD_U;
 
   IME = 1;
 
@@ -413,7 +405,6 @@ void sub_500(void) {
   IME = 0;
 
   memSwapRanges();
-  B = PIF_CMD_U;
   RAM(PIF_CMD_U) |= BIT(PIF_CMD_U_CHECKSUM_ACK);
 
   IME = 1;
@@ -438,37 +429,28 @@ void sub_500(void) {
     }
   }
 
-  RAM(0x4a) = 0xf;
-  RAM(0x4b) = 0xb;
-  memZero(0x4c);
+  RAM(BOOT_TIMER + 0) = 0xf;
+  RAM(BOOT_TIMER + 1) = 0xb;
+  memZero(BOOT_TIMER + 2);
 
   IME = 1;
 
-  sub_52D();
-}
-
-// 05:2D
-void sub_52D(void) {
   for (;;) {
-    B = PIF_CMD_L;
-
     readCommand();
     if (RAM(PIF_CMD_L) & BIT(PIF_CMD_L_TERMINATE))
       break;
 
-    sub_700();
+    bootTimer();
   }
 
   // terminate boot process
   IME = 0;
   memZero(PIF_CMD_U);
-  B = STATUS;
-  A = 5;
   writeIO(REG_INT_EN, 5);
   RAM(STATUS) |= BIT(STATUS_TERMINATE_RECV);
   IFB = 0;
 
-  sub_30B();
+  cicLoop();
 }
 
 // 06:00
@@ -531,15 +513,13 @@ bool increment8(void) {
 }
 
 // 07:00
-void sub_700(void) {
-  B = 0x4f;
+void bootTimer(void) {
+  B = BOOT_TIMER_END - 1;
   if (!increment8() || !increment8() || !increment8()) {
     return;
   }
 
   signalError();
-
-  abort();
 }
 
 // 07:09
