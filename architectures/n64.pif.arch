@@ -1,7 +1,15 @@
-// Sharp SM5
+// Sharp SM5K6
 
 #directive db 1
 #directive dw 2
+
+// Pseudoinstructions
+
+lbx *04   ;%0011 >>04a %0010 ~a
+
+// Normal instructions
+
+nop       ;$00
 
 adx *04   ;%0000 =a
 lax *04   ;%0001 =a
@@ -17,12 +25,6 @@ exc *02   ;%010101 =a
 exci *02  ;%010110 =a
 excd *02  ;%010111 =a
 
-tr *06    ;%10 =a
-trs *05   ;%110 >>01a
-tl *04    ;%1110 >>08a >>04a ~a
-call *04  ;%1111 >>08a >>04a ~a
-
-nop       ;$00
 rc        ;$60
 sc        ;$61
 id        ;$62
@@ -57,5 +59,12 @@ rtn       ;$7d
 rtns      ;$7e
 rtni      ;$7f
 
-tt        ;$69 $02
+tr *06    ;%10 =a
+trs *05   ;%110 >>01a
+tl *04    ;%1110 >>08a >>04a ~a
+call *04  ;%1111 >>08a >>04a ~a
+
+tt2       ;$69 $01
+tt1       ;$69 $02
 dr        ;$69 $03
+tsf       ;$69 $04

@@ -1,104 +1,142 @@
 architecture n64.pif
 
+define low(value) = {value} & $0f
+define high(value) = ({value} & $f0) >> 4
+
+// RAM variables
+
+// low 4 bits of PIF status byte (from VR4300 perspective)
+constant pifStatusLo = $ff
+constant pifStatusLo.joybus = 0    // run joybus protocol
+constant pifStatusLo.challenge = 1 // send challenge to CIC
+constant pifStatusLo.unknown = 2   // unknown
+constant pifStatusLo.terminate = 3 // terminate boot process
+// high 4 bits of PIF status byte
+constant pifStatusHi = $fe
+constant pifStatusHi.lockRom = 0   // lock out PIF-ROM
+constant pifStatusHi.verify = 1    // verify CIC checksum
+constant pifStatusHi.clearRam = 2  // clear all of PIF-RAM
+constant pifStatusHi.response = 3  // CIC checksum verification is complete
+// 6-nibble boot timer
+constant bootTimer = $4f // $4e, $4d, $4c, $4b, $4a
+// 6-nibble CIC seed
+constant cicSeed = $1a // $1b, $1c, $1d, $1e, $1f
+
+// pointer to data for each channel's joybus transaction
+constant joybusDataPtrLo = $00 // $01, $02, $03, $04, $05
+constant joybusDataPtrHi = $10 // $11, $12, $13, $14, $15
+
+// status for each channel
+constant joybusChannelStatus = $40 // $41, $42, $43, $44, $45
+constant JOYBUS_DO_TRANSACTION = 3 // if bit clear, do transaction
+constant F_JOYBUS_DO_TRANSACTION = 8
+constant JOYBUS_RESET = 0  // if bit set, reset channel
+constant F_JOYBUS_RESET = 1
+
+// I/O variables
+
+// CIC data port
+constant cicPort = 5
+constant cicPort.data = 0     // bidirectional data pin (CIC_15 on cart)
+constant cicPort.clock = 1    // data clock (CIC_14 on cart)
+constant cicPort.response = 3 // response from CIC
+
+constant CIC_WRITE_0 = 1<<cicPort.clock
+constant CIC_WRITE_1 = 1<<cicPort.data | 1<<cicPort.clock
+constant CIC_WRITE_OFF = 1<<cicPort.data
+
+
 // page 0 (reset vector)
 origin $000
 
-	lax 1
-	lblx 5
-	out        // P5 <- 1
+	lax CIC_WRITE_OFF
+	lblx cicPort
+	out   // P5 <- 1
 	lblx 14
-	out        // RE <- 1 (enable interrupt A)
-	trs TRS10  // L0D_31
-	lbmx 3
-	lblx 4
-	trs L01_16 // [$34..$3f] = 0
-	lbmx 5
-	lblx 14
-// [$5e] = CIC region ID
-	trs TRS0E  // L0C_00
+	out   // RE <- 1 (enable interrupt A)
+	trs TRS_SetSB // SB = $56
+	lbx $34
+	trs ClearMemPage // [$34..$3f] = 0
 
+// read CIC type to [$5e]
+	lbx $5e
+	trs TRS_CicReadNibble
 	decb
+
+// if type == 1, cart
 	lax 1
 	tam
-	tr L00_12
-// ID == 1
+	tr + // not cart
 	lax 4
-	tr L00_16
+	tr WriteCicType
 
-L00_12:
-	lax 9
+// if type == 9, 64DD
++;	lax 9
 	tam
-	trs TRS0C // L03_39
-// ID == 9
+	trs TRS_SignalError // not 64DD
 	lax 12
 
-L00_16:
+WriteCicType:
 	exc 0
-	lbmx 8
-	lblx 0
-	tr L00_1B
 
-L00_1A:
+// clear all of PIF-RAM
+	lbx $80
+	tr +
+ResetClearRam:
 	exbm
-L00_1B:
-	trs L01_16 // [$80..$ff] = 0
++;	trs ClearMemPage
 	exbm
 	adx 1
-	tr L00_1A
+	tr ResetClearRam
 
-	lbmx 1
-	lblx 10
-// [$1a..$1f] = CIC seed
-L00_21:
-// read nibble of CIC seed
-	trs TRS0E // L0C_00
-	tr L00_21
+// write CIC seed to [$1a..$1f]
+	lbx cicSeed
+-;	trs TRS_CicReadNibble // loop until Bl overflows
+	tr -
 
-// encode seed
-	lblx 10
-	trs TRS0A // L0E_15
-	lblx 10
-	trs TRS0A // L0E_15
-	lbmx 5
-	lblx 14
+// encode seed (2 rounds)
+	lblx {low(cicSeed)}
+	trs TRS_CicEncodeSeed
+	lblx {low(cicSeed)}
+	trs TRS_CicEncodeSeed
+
+// copy CIC type to [$1b]
+// this will eventually be written to [$cb] (PIF-RAM $24 bits 0-3)
+	lbx $5e
 	lda 0
 	rm 1
 	rm 3
-	lbmx 1
-	lblx 11
+	lbx $1b
 	excd 0
 	rc
 
 L00_30:
-// set bit 7 of PIF status byte
-// (response to checksum verification?)
-	lbmx 15
-	lblx 14
-	sm 3
+	lbx pifStatusHi
+	sm pifStatusHi.response
 	ie
 	tl L05_00
 
 // page 1 (TRS vectors)
 origin $040
 
-TRS00:
-	tl L06_29
+TRS_IncrementByte:
+	tl IncrementByte
 TRS02:
-	tl L04_0E
-TRS04:
-	tl L0C_10
-TRS06:
-	tl L09_0D
+	tl SwapMem
+TRS_CicWriteNibble:
+	tl CicWriteNibble
+TRS_LongDelay:
+	tl LongDelay
 TRS08:
 	tl L0E_1B
-TRS0A:
-	tl L0E_15
-TRS0C:
-	tl L03_39
-TRS0E:
-	tl L0C_00
-TRS10:
-	tl L0D_31
+TRS_CicEncodeSeed:
+	tl CicEncodeSeed
+TRS_SignalError:
+	tl SignalError
+TRS_CicReadNibble:
+	tl CicReadNibble
+TRS_SetSB:
+	tl SetSB
 
 // write $fb to [B] and zero rest of segment
 L01_12:
@@ -108,61 +146,54 @@ L01_12:
 	exci 0
 
 // zero memory from B to end of segment
-L01_16:
+ClearMemPage:
 	lax 0
 	exci 0
-	tr L01_16
+	tr ClearMemPage
 	rtn
 
 // fill [$40..$45] with 8
-L01_1A:
-	lbmx 4
-	lblx 5
-
--;	lax 8
+ResetJoybusTransactions:
+	lbx joybusChannelStatus + 5
+-;	lax F_JOYBUS_DO_TRANSACTION
 	excd 0
 	tr -
 	rtn
 
-L01_20:
-// set Bl to 5, trashing X
+CicWriteBit:
 	exax
-	lax 5
+	lax cicPort
 	exbl
+	exax  // save old Bl in X
 
-	exax
 	out   // P5 <- A
 
-// short delay
-	lax 11
+	lax 11 // short delay
 -;	adx 1
 	tr -
 
-	tr L01_35
+	tr CicEndIo
 	nop
 
-// read bit from CIC into C
-L01_2A:
-// set Bl to 5, save old Bl in X
-	lax 5
+CicReadBit:
+	lax cicPort
 	exbl
-	exax
+	exax  // save old Bl in X
 
-	lax 3
+	lax CIC_WRITE_1
 	out   // P5 <- 3
 
-// short delay
-	lax 11
+	lax 11 // short delay
 -;	adx 1
 	tr -
 
-// if bit 3 of P5 is set, set carry, else clear carry
+// set carry to P5.3 (CIC reply)
 	sc
-	tpb 3 // test P5.3
+	tpb cicPort.response // test P5.3
 	rc
 
-L01_35:
-	lax 1
+CicEndIo:
+	lax CIC_WRITE_OFF
 	out   // P5 <- 1
 
 // another delay
@@ -178,13 +209,13 @@ L01_35:
 // page 2 (interrupt vectors)
 origin $080
 
-ifa_int:
-	ex
+InterruptA:
+	ex // B = $56
 	exci 0
 	tr L02_0E
 	nop
 
-ift_int:
+InterruptB:
 	ex
 	exc 0
 	lblx 14
@@ -197,38 +228,34 @@ ift_int:
 	tr L02_3B
 
 L02_0E:
-	tpb 3 // test ??.3
+	tpb 3 // test P6.3
 	tr L02_1D
-	tpb 2 // test ??.2
+	tpb 2 // test P6.2
 	tr L02_39
-	lbmx 15
-	lblx 15
-	tm 1
+	lbx pifStatusLo
+	tm pifStatusLo.challenge
 	tl L07_13
-	lbmx 5
-	lblx 14
+	lbx $5e
 	tm 3
 	tr L02_39
 	tl L07_09
 L02_1D:
-	call L03_06
+	call HaltCpu
 
 // if bit 0 of PIF status byte is set, run joybus protocol
-	lbmx 15
-	lblx 15
-	tm 0
+	lbx pifStatusLo
+	tm pifStatusLo.joybus
 	tr SkipJoybus
 
 	rm 0
 	call L0F_2F
-	lbmx 1
-	lblx 0
+	lbx joybusDataPtrHi
 	ex
-	trs L01_1A
-	call L09_2D
+	trs ResetJoybusTransactions // [$40..$45] = 8
+	call PrepareJoybusTransactions
+
 L02_2C:
-	lbmx 5
-	lblx 9
+	lbx $59
 	sc
 	tm 0
 	rc
@@ -237,11 +264,12 @@ L02_2C:
 	exax
 	call L0C_32
 	tr L02_3B
+
 SkipJoybus:
 	lbmx 5
 	tr L02_3B
 L02_39:
-	call L03_06
+	call HaltCpu
 L02_3B:
 	lblx 6
 	exc 0
@@ -251,7 +279,7 @@ L02_3B:
 // page 3 (standby exit vector)
 origin $0C0
 
-halt_exit:
+StandbyExit:
 	nop
 	tm 3
 	rtn
@@ -259,40 +287,40 @@ halt_exit:
 	out   // RE <- 5 (enable interrupt A and B)
 	rtn
 
-L03_06:
+HaltCpu:
 	lblx 14
 	lax 1
 	out   // RE <- 1 (enable interrupt A)
 	halt
-	tr halt_exit
+	tr StandbyExit
 
-L03_0B:
+CicLoopStart:
 	ie
-L03_0C:
-	lbmx 5
-	lblx 14
-	tm 3
-	tl L06_00
-	tm 1
-	tr L03_16
-	rm 1
-	tl L0D_00
 
-L03_16:
-	lax 2
-	trs L01_20
-	lax 2
-	trs L01_20
-	lbmx 6
+CicLoop:
+	lbx $5e
+	tm 3
+	tl CicReset
+	tm 1
+	tr CicCompare
+	rm 1
+	tl CicChallenge
+
+CicCompare:
+	lax CIC_WRITE_0
+	trs CicWriteBit
+	lax CIC_WRITE_0
+	trs CicWriteBit
+	lbmx 6 // B = $6e
 	trs TRS08 // L0E_1B
 	trs TRS08 // L0E_1B
 	trs TRS08 // L0E_1B
-	lbmx 7
+	lbmx 7 // B = $7e
 	trs TRS08 // L0E_1B
 	trs TRS08 // L0E_1B
 	trs TRS08 // L0E_1B
-	lbmx 7
-	lblx 7
+
+	lbx $77
 	lda 0
 	adx 15
 	lax 0
@@ -302,28 +330,29 @@ L03_29:
 	lbmx 6
 	lax 3
 	tm 0
-	lax 2
-	trs L01_20
+	lax CIC_WRITE_0
+	trs CicWriteBit
 	lbmx 7
-	trs L01_2A
+	trs CicReadBit // return with B = $75
 	tc
 	tr L03_37
 	tm 0
-	tr L03_39
+	tr SignalError
 L03_34:
 	incb
 	tr L03_29
-	tr L03_0C
+	tr CicLoop
 L03_37:
 	tm 0
 	tr L03_34
-L03_39:
+
+// infinite loop, strobe R8
+SignalError:
 	id
 	lblx 8
-L03_3B:
-	out   // R8 <- A
+-;	out   // R8 <- A
 	coma
-	tr L03_3B
+	tr -
 
 // page 4 (PAT data)
 origin $100
@@ -346,12 +375,10 @@ origin $100
 // swap internal and external memory
 // [$1b..$1f] <-> [$cb..$cf]
 // [$34..$3f] <-> [$e4..$ef]
-L04_0E:
-	lbmx 12
-	lblx 11
+SwapMem:
+	lbx $cb
 	call L04_14
-	lbmx 14
-	lblx 4
+	lbx $e4
 L04_14:
 	exc 0
 	exbm
@@ -365,8 +392,7 @@ L04_14:
 	exc 0
 	incb
 	tr L04_14
-	lbmx 15
-	lblx 14
+	lbx pifStatusHi
 	rtn
 
 L04_23:
@@ -403,8 +429,8 @@ origin $140
 
 L05_00:
 	id
-	trs TRS02 // L04_0E
-	trs L01_16
+	trs TRS02 // SwapMem, return with B = $fe
+	trs ClearMemPage
 	lblx 14
 	ie
 
@@ -419,101 +445,92 @@ L05_00:
 	lblx 2
 	lax 1
 	out   // P2 <- 1
-	trs L01_1A
+	trs ResetJoybusTransactions
 
-	lbmx 15
-	lblx 14
+	lbx pifStatusHi
 	ie
 
 // wait for checksum verification bit
--;	tm 1
+-;	tm pifStatusHi.verify
 	tr -
 
 	id
-	trs TRS02 // L04_0E
-	sm 3
+	trs TRS02 // SwapMem, return with B = $fe
+	sm pifStatusHi.response // set checksum response bit
 	ie
 
-// wait for clear pif ram bit
--;	tm 2
+// wait for clear PIF ram bit
+-;	tm pifStatusHi.clearRam
 	tr -
 
 	id
 	lax 0
-	exc 0
-	tc
+	exc 0 // clear pifStatusHi
+	tc    // TODO: where does carry flag come from?
 	call L0E_00
-	lbmx 3
-	lblx 4
+	lbx $34
 
 // compare checksum
 L05_22:
 	lax 0
 	exc 1
 	tam
-	trs TRS0C // L03_39
+	trs TRS_SignalError
 	lbmx 3
 	incb
 	tr L05_22
 
-	lbmx 4
-	lblx 10
+	lbx $4a
 	trs L01_12
 	ie
-L05_2D:
-// test bit 3 of PIF status byte
-// (must be set by CPU within 5 seconds after booting, else system locks up)
-	lbmx 15
-	lblx 15
-	tm 3
-	tl L07_00
+WaitTerminateBit:
+// must be set by CPU within 5 seconds after booting, else system locks up
+	lbx pifStatusLo
+	tm pifStatusLo.terminate
+	tl IncrementBootTimer
 
 	id
 	lblx 14
-	trs L01_16
-	lbmx 5
-	lblx 14
+	trs ClearMemPage // clear PIF status byte
+	lbx $5e
 	lax 5
 	out   // RE <- 5 (enable interrupt A and B)
 	sm 3
 	tb    // clear interrupt B flag
 	nop
-	tl L03_0B
+	tl CicLoopStart
 
 // page 6
 origin $180
 
-L06_00:
-	lax 3
-	trs L01_20
-	lax 3
-	trs L01_20
-	lblx 5
-	lax 3
-	out   // P5 <- 3
-	lbmx 0
-	lblx 12
-	trs L01_16
-L06_0A:
-// set bit 7 of PIF status byte
-// (response to checksum verification?)
-	lbmx 15
-	lblx 14
-	sm 3
+CicReset:
+	lax CIC_WRITE_1
+	trs CicWriteBit
+	lax CIC_WRITE_1
+	trs CicWriteBit
 
-	lbmx 0
-	lblx 5
-	tpb 3 // test P5.3
+	lblx cicPort
+	lax CIC_WRITE_1
+	out   // P5 <- 3
+	lbx $0c
+	trs ClearMemPage
+
+L06_0A:
+	lbx pifStatusHi
+	sm pifStatusHi.response
+
+	lbx $05
+	tpb cicPort.response // test P5.3
 	tr L06_18
 	lblx 15
-	trs TRS00 // L06_29
+	trs TRS_IncrementByte
 	tr L06_0A
-	trs TRS00 // L06_29
+	trs TRS_IncrementByte
 	tr L06_0A
-	trs TRS0C // L03_39
+	trs TRS_SignalError
 	lblx 5
 L06_18:
-	lax 1
+	lax CIC_WRITE_OFF
 	out   // P5 <- 1
 
 	lblx 8
@@ -532,19 +549,25 @@ L06_18:
 	sc
 	tl L00_30
 
-L06_29:
+// increment two nibbles at [B] and [B-1]
+// on overflow, decrement Bl twice and return skip
+IncrementByte:
 	exc 0
 	adx 1
 	tr L06_32
+
 	excd 0
 	exc 0
 	adx 1
 	tr L06_34
+
 	excd 0
-	rtns
+	rtns   // overflow, return and skip
+
 L06_32:
 	exc 0
 	rtn
+
 L06_34:
 	exci 0
 	rtn
@@ -552,23 +575,23 @@ L06_34:
 // page 7
 origin $1C0
 
-L07_00:
-	lbmx 4
-	trs TRS00 // L06_29
-	tr L07_06
-	trs TRS00 // L06_29
-	tr L07_06
-	trs TRS00 // L06_29
+// increment 6-nibble boot timer at [$4f..$4a]
+// if all 6 nibbles overflow, lock up
+IncrementBootTimer:
+	lbmx {high(bootTimer)}
+// B = $4f
+	trs TRS_IncrementByte
+	tr +
+	trs TRS_IncrementByte
+	tr +
+	trs TRS_IncrementByte
++;	tl WaitTerminateBit
+	trs TRS_SignalError
 
-L07_06:
-	tl L05_2D
-	trs TRS0C // L03_39
 L07_09:
-	lbmx 15
-	lblx 15
-	rm 1
-	lbmx 5
-	lblx 14
+	lbx pifStatusLo
+	rm pifStatusLo.challenge
+	lbx $5e
 	sm 1
 	lblx 6
 	exc 0
@@ -605,8 +628,7 @@ L07_27:
 L07_2A:
 	lbmx 1
 	call L0C_32
-	lbmx 2
-	lblx 2
+	lbx $22
 	call L09_16
 	tr L07_33
 	tr L07_1B
@@ -616,7 +638,7 @@ L07_33:
 	tl L08_18
 L07_38:
 	lbmx 5
-	call L03_06
+	call HaltCpu
 	tl L02_2C
 
 // page 8
@@ -659,8 +681,7 @@ L08_18:
 
 L08_1D:
 	call L09_00
-	lbmx 3
-	lblx 3
+	lbx $33
 	tr L08_38
 
 L08_22:
@@ -703,13 +724,12 @@ L08_3D:
 origin $240
 
 L09_00:
-	lbmx 15
-	lblx 15
-	tm 2
+	lbx pifStatusLo
+	tm pifStatusLo.unknown
 	tr L09_09
-	tm 3
+	tm pifStatusLo.terminate
 	call L09_09
-	trs TRS06 // L09_0D
+	trs TRS_LongDelay
 	rtn
 
 L09_09:
@@ -718,17 +738,17 @@ L09_09:
 	out   // P2 <- 2
 	rtn
 
-L09_0D:
+// loop until XA overflows
+LongDelay:
 	lax 0
 	atx
-
-L09_0F:
+LongDelayLoop:
 	exax
 -;	adx 1
 	tr -
 	exax
 	adx 1
-	tr L09_0F
+	tr LongDelayLoop
 	rtn
 
 L09_16:
@@ -759,94 +779,117 @@ L09_22:
 	excd 1
 	rtn
 
-L09_2D:
-	lbmx 8
-	lblx 0
-L09_2F:
+// This routine prepares all six channels for a Joybus transaction.
+PrepareJoybusTransactions:
+	lbx $80
+JoybusLoop:
 	lax 15
-	tam
-	tl L0A_0E
+	tam   // are bits 7-4 of TX count = $f?
+	tl JoybusCommand // if not, run normal joybus command
+
 	incb
 	lda 0
-	adx 1
-	tl L0A_03
+	adx 1 // jump if bits 3-0 != $f
+	tl JoybusSpecialCommand
+
+// TX = $ff, command is a NOP. go to next byte
 	incb
-	tr L09_2F
+	tr JoybusLoop
 	exbm
 	adx 1
 	tl L0A_00
-	rtn
+	rtn   // end protocol if B overflows (end of PIF-RAM)
 
 // page A
 origin $280
 
 L0A_00:
 	exbm
-	tl L09_2F
-L0A_03:
+	tl JoybusLoop
+
+JoybusSpecialCommand:
 	adx 1
-	tr L0A_06
-	rtn
-L0A_06:
-	adx 1
-	tr L0A_1F
+	tr +
+	rtn   // end protocol if TX = $fe
+
++;	adx 1
+	tr JoybusHandleTxDecb // if not $fd, handle as normal command
+
+// TX = $fd, mark joybus channel for reset
 	ex
-	lbmx 4
-	sm 0
-	lbmx 1
+	lbmx {high(joybusChannelStatus)}
+	sm JOYBUS_RESET
+	lbmx {high(joybusDataPtrHi)}
 	ex
 	tr L0A_14
-L0A_0E:
+
+JoybusCommand:
+// check if TX = $00
 	lax 0
-L0A_0F:
 	tam
-	tr L0A_20
+	tr JoybusHandleTx
 	incb
 	tam
-	tr L0A_1F
+	tr JoybusHandleTxDecb
+
+// TX = $00, skip this channel
 L0A_14:
+// increment PIF-RAM pointer
 	incb
 	tr L0A_1B
 	exbm
 	adx 1
-	tr L0A_1A
-	rtn
-
-L0A_1A:
-	exbm
+	tr +
+	rtn   // end protocol if B overflows (end of PIF-RAM)
++;	exbm
 L0A_1B:
 	ex
-	incb
-	tl L0B_33
-L0A_1F:
+	incb  // skip channel
+	tl JoybusNextCmd
+
+JoybusHandleTxDecb:
 	decb
-L0A_20:
+JoybusHandleTx:
+
+// B = PIF-RAM pointer
+// SB = joybusDataHi
+// write high nibble of transaction data addr to joybusDataPtrHi
 	exbm
-	atx
+	atx    // X <- Bm
 	exbm
 	exax
 	ex
-	exc 1
+	exc 1  // joybusDataPtrHi[SBl] <- X (Bm)
 	ex
+
+// SB = joybusDataLo
+// write low nibble of transaction data addr to joybusDataPtrHi
 	exbl
-	atx
+	atx    // X <- Bl
 	exbl
 	exax
 	ex
-	exci 1
+	exci 1 // joybusDataPtrLo[SBl] <- X (Bl)
 	ex
+
+// joybusDataLo/Hi now contains pointer to data for this channel's transaction
+
+// copy TX count bits 7-4 to X, mask upper 2 bits of X
 	lda 0
 	rm 2
 	rm 3
 	exci 0
 	exax
+// copy TX count bits 0-3 to A
 	lda 0
+
+// mark channel as ready for transaction
 	ex
-	lbmx 4
+	lbmx {high(joybusChannelStatus)}
 	decb
-	rm 3
+	rm JOYBUS_DO_TRANSACTION
 	incb
-	lbmx 1
+	lbmx {high(joybusDataPtrHi)}
 	exax
 	tl L0B_00
 
@@ -854,121 +897,157 @@ L0A_20:
 origin $2C0
 
 L0B_00:
+// now comes the lengthy process of jumping to the next command in PIF-RAM
+// temporarily write no of bytes in this transaction to next channel's data ptr
+
+// initialize with TX byte count...
 	exc 1
 	exax
 	exc 1
+// next, add number of RX bytes
+
+// go to next PIF-RAM byte (RX count)
 	ex
 	incb
-	tr L0B_0B
+	tr JoybusHandleRx
 	exbm
 	adx 1
-	tr L0B_0A
-	tr L0B_3A
+	tr JoybusHandleRxExbm
+	tr CancelJoybusCmdEx // end protocol if B overflows (end of PIF-RAM)
 
-L0B_0A:
+JoybusHandleRxExbm:
 	exbm
-L0B_0B:
+JoybusHandleRx:
+// copy RX count bits 7-4 to X, mask upper 2 bits of X
 	lda 0
 	rm 3
 	rm 2
 	exci 0
 	exax
+// copy RX count bits 0-3 to A
 	lda 0
+
+// add RX count lo to transaction byte count lo
 	ex
 	rc
-	lbmx 0
+	lbmx {low(joybusDataPtrLo)}
 	adc
 	nop
-	exc 1
+	exc 1  // write transaction byte count lo
+
+// B = joybusDataPtrHi
+// add RX count hi to transaction byte count hi
 	exax
 	adc
-	exc 1
+	exc 1 // write transaction byte count hi
+	      // TODO why skip on overflow?
+
+// B = joybusDataPtrLo
+// convert transaction byte count to nibble count
+// by adding to self (i.e. multiply by 2)
 	rc
 	lda 0
 	adc
 	nop
-	exc 1
+	exc 1 // B = joybusDataPtrHi
 	lda 0
 	adc
-	exc 1
-	ex
-	exbl
-	ex
-	sc
-	adc
-	nop
-	lbmx 1
-	ex
-	exbl
-	exbm
-	ex
-	adc
-	tr L0B_30
-	tr L0B_3B
+	exc 1 // B = joybusDataPtrLo
 
-L0B_30:
+// next channel's data pointer now temporarily holds the length of this
+// channel's transaction in nibbles (minus 1)
+// now add it to B to go to next command in PIF-RAM
 	ex
-	exbm
+	exbl // A <- low nibble of curr PIF-RAM address
 	ex
-L0B_33:
+
+	sc   // add 1
+	adc  // add transaction nibble count lo
+	nop
+	lbmx {high(joybusDataPtrHi)}
+
+	ex
+	exbl // Bl <- next joybus command lo
+	exbm // A <- high nibble of curr PIF-RAM address
+	ex
+
+	adc  // add transaction nibble count hi + carry
+	tr +
+	tr CancelJoybusCmd // if address overflows, cancel this channel's transaction and end protocol
++;	ex
+	exbm // Bm <- next joybus command hi
+	ex
+
+// B now contains address of next command in PIF-RAM
+// finally, go to next channel
+
+JoybusNextCmd:
 	lax 5
 	tabl
-	tr L0B_37
-	rtn
+	tr +
+	rtn   // if Bl = 5, last channel was just processed. end protocol
++;	ex
+	tl JoybusLoop // else, process next channel
 
-L0B_37:
+CancelJoybusCmdEx:
 	ex
-	tl L09_2F
-L0B_3A:
-	ex
-L0B_3B:
+CancelJoybusCmd:
 	decb
-	lbmx 4
-	rm 0
-	sm 3
+	lbmx {high(joybusChannelStatus)}
+	rm 0 // TODO what's this bit? "cancelled by overflow" bit?
+	sm JOYBUS_DO_TRANSACTION // cancel transaction
 	rtn
 
 // page C
 origin $300
 
 // read nibble from CIC into [B]
-// increments BL, returns with skip on carry
-L0C_00:
+// increments Bl, returns with skip on carry
+CicReadNibble:
 	lax 15
 	exc 0
-	trs L01_2A
+
+	trs CicReadBit
 	tc
 	rm 3
-	trs L01_2A
+
+	trs CicReadBit
 	tc
 	rm 2
-	trs L01_2A
+
+	trs CicReadBit
 	tc
 	rm 1
-	trs L01_2A
+
+	trs CicReadBit
 	tc
 	rm 0
-	rc
-	tr L0C_20
 
-L0C_10:
-	lax 3
+	rc
+	tr CicNibbleEnd
+
+CicWriteNibble:
+	lax CIC_WRITE_1
 	tm 3
-	lax 2
-	trs L01_20
-	lax 3
+	lax CIC_WRITE_0
+	trs CicWriteBit
+
+	lax CIC_WRITE_1
 	tm 2
-	lax 2
-	trs L01_20
-	lax 3
+	lax CIC_WRITE_0
+	trs CicWriteBit
+
+	lax CIC_WRITE_1
 	tm 1
-	lax 2
-	trs L01_20
-	lax 3
+	lax CIC_WRITE_0
+	trs CicWriteBit
+
+	lax CIC_WRITE_1
 	tm 0
-	lax 2
-	trs L01_20
-L0C_20:
+	lax CIC_WRITE_0
+	trs CicWriteBit
+
+CicNibbleEnd:
 	incb
 	rtn
 	rtns
@@ -1006,37 +1085,32 @@ L0C_32:
 // page D
 origin $340
 
-L0D_00:
-	lax 3
-	trs L01_20
-	lax 2
-	trs L01_20
-	lbmx 0
-	lblx 10
-	trs TRS0E // L0C_00
-	trs TRS0E // L0C_00
-	lbmx 13
-	lblx 13
+CicChallenge:
+	lax CIC_WRITE_1
+	trs CicWriteBit
+	lax CIC_WRITE_0
+	trs CicWriteBit
+	lbx $0a
+	trs TRS_CicReadNibble
+	trs TRS_CicReadNibble
+	lbx $dd
 	call L0D_1B
-	lbmx 0
-	lblx 11
+	lbx $0b
 
--;	trs TRS00 // L06_29
+-;	trs TRS_IncrementByte
 	tr -
 
-	trs L01_2A
-	lbmx 13
-	lblx 15
+	trs CicReadBit
+	lbx $df
 	call L0D_1B
 	lbmx 5
-	call L03_06
-	trs TRS10 // L0D_31
-	tl L03_0B
+	call HaltCpu
+	trs TRS_SetSB // SB = $56
+	tl CicLoopStart
 
 L0D_1B:
 	ex
-	lbmx 14
-	lblx 0
+	lbx $e0
 L0D_1E:
 	ex
 	lda 0
@@ -1049,24 +1123,23 @@ L0D_22:
 	tabl
 	tr L0D_2B
 	ex
-	trs TRS04 // L0C_10
-	trs TRS04 // L0C_10
+	trs TRS_CicWriteNibble
+	trs TRS_CicWriteNibble
 	tr L0D_1E
 	tr L0D_2F
 
 L0D_2B:
 	ex
-	trs TRS0E // L0C_00
-	trs TRS0E // L0C_00
+	trs TRS_CicReadNibble
+	trs TRS_CicReadNibble
 	tr L0D_1E
 L0D_2F:
 	lbmx 15
 	tr L0D_1E
 
 // set SB = $56
-L0D_31:
-	lbmx 5
-	lblx 6
+SetSB:
+	lbx $56
 	ex
 	rtn
 
@@ -1085,36 +1158,34 @@ L0D_35:
 origin $380
 
 L0E_00:
-	lbmx 1
-	lblx 11
+	lbx $1b
 	sm 1
 	call L0F_1B
 	lblx 5
 	lax 3
 	out   // R3 <- 3 (set P3 pins 0 and 1 to analog)
-	trs TRS06 // L09_0D
+	trs TRS_LongDelay
 	lax 1
 	out   // R3 <- 1 (set P3 pin 0 to analog)
-	lbmx 2
-	lblx 0
+	lbx $20
 L0E_0D:
-	trs TRS0E // L0C_00
+	trs TRS_CicReadNibble
 	tr L0E_0D
 
-	trs TRS0A // L0E_15
-	trs TRS0A // L0E_15
-	trs TRS0A // L0E_15
-	trs TRS0A // L0E_15
+// 4 rounds of encoding
+	trs TRS_CicEncodeSeed
+	trs TRS_CicEncodeSeed
+	trs TRS_CicEncodeSeed
+	trs TRS_CicEncodeSeed
 	tl L0F_00
 
 // encode CIC seed or checksum (one round)
-L0E_15:
+CicEncodeSeed:
 	lax 15
-L0E_16:
-	coma
+-;	coma
 	add
 	exci 0
-	tr L0E_16
+	tr -
 	rtn
 
 L0E_1B:
@@ -1163,13 +1234,11 @@ L0E_34:
 origin $3C0
 
 L0F_00:
-	lbmx 6
-	lblx 0
+	lbx $60
 	lax 0
 	exc 0
 	ex
-	lbmx 6
-	lblx 2
+	lbx $62
 L0F_07:
 	ex
 	lax 4
@@ -1185,20 +1254,18 @@ L0F_07:
 	exci 1
 	tr L0F_07
 	lblx 1
-	trs TRS04 // L0C_10
-	lbmx 7
-	lblx 1
-	trs TRS04 // L0C_10
-	tl L0D_31
+	trs TRS_CicWriteNibble
+	lbx $71
+	trs TRS_CicWriteNibble
+	tl SetSB // SB = $56
 
 L0F_1B:
-	lbmx 6
-	lblx 9
+	lbx $69
 	lax 1
 	out   // R9 <- 1
 
 L0F_1F:
-	call L06_29
+	call IncrementByte
 	nop
 	lblx 9
 	tpb 3 // test R9.3
@@ -1216,8 +1283,7 @@ L0F_1F:
 	rtn
 
 L0F_2F:
-	lbmx 5
-	lblx 7
+	lbx $57
 	ex
 	exbm
 	ex
