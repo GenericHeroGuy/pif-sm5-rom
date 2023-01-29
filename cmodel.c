@@ -213,43 +213,36 @@ void interruptA(void) {
   SB = B;
   RAM(SAVE_A) = A;
 
-  if (!(readIO(7) & BIT(3)))
-    goto loc_21D;
-  if (!(readIO(7) & BIT(2)))
-    goto loc_239;
+  if (readIO(7) & BIT(3)) {
+    if (readIO(7) & BIT(2)) {
+      readCommand();
+      if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_CHALLENGE)) {
+        sub_713();
+        return;
+      }
 
-  readCommand();
-  if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_CHALLENGE)) {
-    sub_713();
-    return;
+      if (RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV)) {
+        interruptEpilogID();
+        return;
+      }
+    }
+
+    halt();
+  } else {
+    halt();
+
+    readCommand();
+    if (RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_JOYBUS)) {
+      RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_JOYBUS);
+
+      regSave();
+      SB = 0x10;
+      memFill8();
+      sub_92D();
+      regRestore();
+      return;
+    }
   }
-
-  if (!RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV))
-    goto loc_239;
-  interruptEpilogID();
-  return;
-
-loc_21D:
-  halt();
-
-  readCommand();
-  if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_JOYBUS))
-    goto loc_237;
-  RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_JOYBUS);
-
-  regSave();
-  SB = 0x10;
-  memFill8();
-  sub_92D();
-  regRestore();
-  return;
-
-loc_237:
-  interruptEpilog();
-  return;
-
-loc_239:
-  halt();
 
   interruptEpilog();
 }
