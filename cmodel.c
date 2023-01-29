@@ -25,6 +25,8 @@ enum {
 };
 
 enum {
+  JOYBUS_ADDR_L = 0x00,
+  JOYBUS_ADDR_U = 0x10,
   CIC_CHALLENGE_TIMER_U = 0x0a,
   CIC_CHALLENGE_TIMER_L = 0x0b,
   RESET_TIMER = 0x0c,
@@ -41,6 +43,10 @@ enum {
   CIC_CHECKSUM_END = 0x30,
   PIF_CHECKSUM = 0x34,
   PIF_CHECKSUM_END = 0x40,
+  JOYBUS_STATUS = 0x40,
+  JOYBUS_STATUS_RESET = 0,
+  JOYBUS_STATUS_INITIAL = 3,
+  JOYBUS_STATUS_END = 0x46,
   SAVE_SBL = 0x47,
   BOOT_TIMER = 0x4a,
   BOOT_TIMER_END = 0x50,
@@ -81,7 +87,7 @@ const u8 rom[] = {
 void start(void);
 void bootTimerInit(u8 address);
 void memZero(u8 address);
-void memFill8(void);
+void joybusStatusInit(void);
 void cicWriteBit(bool value);
 bool cicReadBit(void);
 void interruptA(void);
@@ -106,7 +112,8 @@ void spin256(void);
 bool sub_916(void);
 void sub_91F(void);
 void sub_922(void);
-void sub_92D(void);
+void joybusCommandProcess(void);
+bool joybusCommandAdvance(u8* address, u8 channel);
 void cicReadNibble(u8 address);
 void cicWriteNibble(u8 address);
 void sub_C26(void);
@@ -184,9 +191,9 @@ void memZero(u8 address) {
 
 // 01:1A
 // fill [0x40..0x45] with 8
-void memFill8(void) {
-  for (u8 address = 0x45; address >= 0x40; --address)
-    RAM(address) = 8;
+void joybusStatusInit(void) {
+  for (u8 address = JOYBUS_STATUS_END - 1; address >= JOYBUS_STATUS; --address)
+    RAM(address) = BIT(JOYBUS_STATUS_INITIAL);
 }
 
 // 01:20
@@ -236,9 +243,8 @@ void interruptA(void) {
       RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_JOYBUS);
 
       regSave();
-      SB = 0x10;
-      memFill8();
-      sub_92D();
+      joybusStatusInit();
+      joybusCommandProcess();
       regRestore();
       return;
     }
@@ -382,7 +388,7 @@ void boot(void) {
 
   writeIO(6, 1);
   writeIO(2, 1);
-  memFill8();
+  joybusStatusInit();
 
   IME = 1;
 
@@ -749,192 +755,74 @@ void sub_922(void) {
 }
 
 // 09:2D
-void sub_92D(void) {
-  B = RAM_EXTERNAL;
+void joybusCommandProcess(void) {
+  u8 b = RAM_EXTERNAL;
+  u8 n = 0;
 
-loc_92F:
   do {
-    A = 0xf;
-    if (0xf != RAM(B))
-      goto loc_A0E;
-    ++BL;
-    A = RAM(B);
-    A += 1;
-    if (A)
-      goto loc_A03;
-  } while (++BL);
+    u8 cmd = (RAM(b) << 4) | RAM(b + 1);
 
-  SWAP(A, BM);
-  A += 1;
+    // stop processing
+    if (cmd == 0xfe)
+      break;
 
-  SWAP(A, BM);
-  goto loc_92F;
+    // reset channel
+    if (cmd == 0xfd) {
+      RAM_BIT_SET(JOYBUS_STATUS + n, JOYBUS_STATUS_RESET);
+    }
 
-loc_A03:
-  A += 1;
-  if (!A)
-    return;
+    if (cmd == 0xff || cmd == 0xfd || cmd == 0x00) {
+      // fixed length commands
+      b += 2;
+      if (!b)
+        break;
 
-  A += 1;
-  if (A)
-    goto loc_A1F;
-  SWAP(B, SB);
-  BM = 4;
-  RAM_BIT_SET(B, 0);
-  BM = 1;
-  SWAP(B, SB);
-  goto loc_A14;
+      if (cmd != 0xff)
+        ++n;
+    } else {
+      // variable length commands
+      RAM(JOYBUS_ADDR_U + n) = b >> 4;
+      RAM(JOYBUS_ADDR_L + n) = b & 0xf;
+      RAM_BIT_RESET(JOYBUS_STATUS + n, JOYBUS_STATUS_INITIAL);
+      ++n;
 
-loc_A0E:
-  A = 0;
-  if (0 != RAM(B))
-    goto loc_A20;
-  ++BL;
-  if (0 != RAM(B))
-    goto loc_A1F;
+      if (joybusCommandAdvance(&b, n)) {
+        n--;
+        RAM_BIT_RESET(JOYBUS_STATUS + n, JOYBUS_STATUS_RESET);
+        RAM_BIT_SET(JOYBUS_STATUS + n, JOYBUS_STATUS_INITIAL);
+        break;
+      }
+    }
+  } while (n != 5);
+}
 
-loc_A14:
-  if (++BL)
-    goto loc_A1B;
-  SWAP(A, BM);
-  A += 1;
-  if (!A)
-    return;
+// 0B:00
+bool joybusCommandAdvance(u8* address, u8 channel) {
+  u8 b = *address;
+  u8 n = channel;
 
-  SWAP(A, BM);
+  u8 tx_u = RAM(b + 0) & 3;
+  u8 tx_l = RAM(b + 1);
+  RAM(JOYBUS_ADDR_U + n) = tx_u;
+  RAM(JOYBUS_ADDR_L + n) = tx_l;
+  b += 2;
+  if (!b)
+    return true;
 
-loc_A1B:
-  SWAP(B, SB);
-  if (++BL)
-    goto loc_B33;
+  u8 rx_u = RAM(b + 0) & 3;
+  u8 rx_l = RAM(b + 1);
+  u8 cnt = (tx_u << 4) | tx_l;
+  cnt += (rx_u << 4) | rx_l;
+  cnt += cnt;
+  RAM(JOYBUS_ADDR_L + n) = cnt & 0xf;
+  RAM(JOYBUS_ADDR_U + n) = cnt >> 4;
 
-loc_A1F:
-  if (!BL--)
-    goto loc_A21;
+  u16 next = b + cnt + 2;
+  if (next >= 0x100)
+    return true;
 
-loc_A20:
-  SWAP(A, BM);
-loc_A21:
-  X = A;
-  SWAP(A, BM);
-  SWAP(A, X);
-  SWAP(B, SB);
-  SWAP(A, RAM(B));
-  BM ^= 1;
-  SWAP(B, SB);
-  SWAP(A, BL);
-  X = A;
-  SWAP(A, BL);
-  SWAP(A, X);
-  SWAP(B, SB);
-  SWAP(A, RAM(B));
-  BM ^= 1;
-  if (++BL)
-    SWAP(B, SB);
-  A = RAM(B);
-  RAM_BIT_RESET(B, 2);
-  RAM_BIT_RESET(B, 3);
-  SWAP(A, RAM(B));
-  if (++BL)
-    SWAP(A, X);
-  A = RAM(B);
-  SWAP(B, SB);
-  BM = 4;
-  if (BL--)
-    RAM_BIT_RESET(B, 3);
-  if (++BL)
-    BM = 1;
-  SWAP(A, X);
-
-  SWAP(A, RAM(B));
-  BM ^= 1;
-  SWAP(A, X);
-  SWAP(A, RAM(B));
-  BM ^= 1;
-  SWAP(B, SB);
-  if (++BL)
-    goto loc_B0B;
-  SWAP(A, BM);
-  A += 1;
-  if (A)
-    goto loc_B0A;
-  goto loc_B3A;
-
-loc_B0A:
-  SWAP(A, BM);
-
-loc_B0B:
-  A = RAM(B);
-  RAM_BIT_RESET(B, 3);
-  RAM_BIT_RESET(B, 2);
-  SWAP(A, RAM(B));
-  if (++BL)
-    SWAP(A, X);
-  A = RAM(B);
-  SWAP(B, SB);
-  BM = 0;
-  bool c = A + RAM(B) >= 0x10;
-  A = A + RAM(B);
-  SWAP(A, RAM(B));
-  BM ^= 1;
-  SWAP(A, X);
-  bool Cy = A + RAM(B) + c >= 0x10;
-  A = A + RAM(B) + c;
-  c = Cy;
-  if (!Cy) {
-    SWAP(A, RAM(B));
-    BM ^= 1;
-  }
-  A = RAM(B);
-  c = A + RAM(B) >= 0x10;
-  A = A + RAM(B);
-  SWAP(A, RAM(B));
-  BM ^= 1;
-  A = RAM(B);
-  Cy = A + RAM(B) + c >= 0x10;
-  A = A + RAM(B) + c;
-  c = Cy;
-  if (!Cy) {
-    SWAP(A, RAM(B));
-    BM ^= 1;
-  }
-  SWAP(B, SB);
-  SWAP(A, BL);
-  SWAP(B, SB);
-  c = A + RAM(B) + 1 >= 0x10;
-  A = A + RAM(B) + 1;
-  BM = 1;
-  SWAP(B, SB);
-  SWAP(A, BL);
-  SWAP(A, BM);
-  SWAP(B, SB);
-  Cy = A + RAM(B) + c >= 0x10;
-  A = A + RAM(B) + c;
-  c = Cy;
-  if (!Cy)
-    goto loc_B30;
-  goto loc_B3B;
-
-loc_B30:
-  SWAP(B, SB);
-  SWAP(A, BM);
-  SWAP(B, SB);
-
-loc_B33:
-  A = 5;
-  if (BL == 5)
-    return;
-  SWAP(B, SB);
-  goto loc_92F;
-
-loc_B3A:
-  SWAP(B, SB);
-
-loc_B3B:
-  if (BL--)
-    BM = 4;
-  RAM_BIT_RESET(B, 0);
-  RAM_BIT_SET(B, 3);
+  *address = next;
+  return false;
 }
 
 // 0C:00
