@@ -15,7 +15,7 @@
 
 FILE* input;
 
-bool IFA = 0;
+bool reset = 0;
 
 void checkInterrupt(void);
 
@@ -25,6 +25,10 @@ enum {
 };
 
 enum {
+  CIC_CHALLENGE_TIMER_U = 0x0a,
+  CIC_CHALLENGE_TIMER_L = 0x0b,
+  RESET_TIMER = 0x0c,
+  RESET_TIMER_END = 0x10,
   CIC_SEED_BUF = 0x1a,
   CIC_SEED = 0x1c,
   CIC_SEED_END = 0x20,
@@ -37,11 +41,25 @@ enum {
   CIC_CHECKSUM_END = 0x30,
   PIF_CHECKSUM = 0x34,
   PIF_CHECKSUM_END = 0x40,
+  SAVE_SBL = 0x47,
   BOOT_TIMER = 0x4a,
   BOOT_TIMER_END = 0x50,
+  SAVE_A = 0x56,
+  SAVE_SBM = 0x57,
+  SAVE_X = 0x58,
+  SAVE_C = 0x59,
   STATUS = 0x5e,
   STATUS_CHALLENGE = 1,
   STATUS_TERMINATE_RECV = 3,
+  CIC_COMPARE_LO = 0x60,
+  CIC_COMPARE_LO_END = 0x70,
+  CIC_COMPARE_HI = 0x70,
+  CIC_COMPARE_HI_END = 0x80,
+  RAM_EXTERNAL = 0x80,
+  CIC_CHALLENGE_COUNT_OUT = 0xdd,
+  CIC_CHALLENGE_COUNT_IN = 0xdf,
+  CIC_CHALLENGE_LO = 0xe0,
+  CIC_CHALLENGE_HI = 0xf0,
   PIF_CMD_U = 0xfe,
   PIF_CMD_U_LOCKOUT = 0,
   PIF_CMD_U_CHECKSUM = 1,
@@ -56,25 +74,32 @@ enum {
 
 // The only non-code data in the ROM, taken from 04:00.
 const u8 rom[] = {
-    0x19, 0x4a, 0xf1, 0x88, 0xb5, 0x5a, 0x71, 0xc3,
-    0xde, 0x61, 0x10, 0xed, 0x9e, 0x8c, 0x3c, 0x2b,
+    0x19, 0x4a, 0xf1, 0x88, 0xb5, 0x5a, 0x71,
+    0xc3, 0xde, 0x61, 0x10, 0xed, 0x9e, 0x8c,
 };
 
+void start(void);
+void bootTimerInit(u8 address);
 void memZero(u8 address);
-void sub_22C(void);
+void memFill8(void);
+void cicWriteBit(bool value);
+bool cicReadBit(void);
+void interruptA(void);
+void interruptB(void);
+void regRestore(void);
 void interruptEpilog(void);
 void halt(void);
+void cicLoop(void);
 void cicCompare(void);
 void signalError(void);
 void memSwapRanges(void);
 void memSwap(u8 address);
 void boot(void);
 void cicReset(void);
-bool increment8(void);
+bool increment8(u8* address);
 void bootTimer(void);
-void sub_709(void);
+void interruptEpilogID(void);
 void sub_713(void);
-void sub_71B(void);
 void sub_900(void);
 void sub_909(void);
 void spin256(void);
@@ -85,24 +110,24 @@ void sub_92D(void);
 void cicReadNibble(u8 address);
 void cicWriteNibble(u8 address);
 void sub_C26(void);
-void sub_C32(void);
+void regRestoreSB(u8 address);
 void cicChallenge(void);
-void sub_D1B(void);
-void initSB(void);
-void sub_D35(void);
+void cicChallengeTransfer(u8 address);
+void regInitSB(void);
+u8 incrementPtr(u8 address);
 void cicChecksum(void);
 void cicDecode(u8 address);
-void sub_E1B(void);
-void sub_F00(void);
-void sub_F1B(void);
-void sub_F2F(void);
+void cicCompareRound(u8 address);
+void cicCompareInit(void);
+void cicCompareSeed(void);
+void regSave(void);
 
 // 00:00
 void start(void) {
   writeIO(PORT_CIC, 1);
   writeIO(REG_INT_EN, 1);
 
-  initSB();
+  regInitSB();
 
   memZero(PIF_CHECKSUM);
 
@@ -119,7 +144,7 @@ void start(void) {
       break;
   }
 
-  for (u8 address = 0x80; address != 0; address += 0x10)
+  for (u8 address = RAM_EXTERNAL; address != 0; address += 0x10)
     memZero(address);
 
   for (u8 address = CIC_SEED_BUF; address < CIC_SEED_END; ++address)
@@ -129,21 +154,28 @@ void start(void) {
   cicDecode(CIC_SEED_BUF);
 
   u8 a = RAM(STATUS);
-  RAM(STATUS) &= ~BIT(STATUS_CHALLENGE);
-  RAM(STATUS) &= ~BIT(STATUS_TERMINATE_RECV);
+  RAM_BIT_RESET(STATUS, STATUS_CHALLENGE);
+  RAM_BIT_RESET(STATUS, STATUS_TERMINATE_RECV);
   RAM(OSINFO) = a;
 
-  C = 0;
+  reset = 0;
 
   for (;;) {
-    RAM(PIF_CMD_U) |= BIT(PIF_CMD_U_CHECKSUM_ACK);
+    RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_CHECKSUM_ACK);
     IME = 1;
     boot();
   }
 }
 
+// 01:12
+void bootTimerInit(u8 address) {
+  RAM(address + 0) = 0xf;
+  RAM(address + 1) = 0xb;
+  memZero(address + 2);
+}
+
 // 01:16
-// zero memory from B to end of segment
+// zero memory from address to end of segment
 void memZero(u8 address) {
   do {
     RAM(address) = 0;
@@ -178,46 +210,41 @@ bool cicReadBit(void) {
 
 // 02:00
 void interruptA(void) {
-  assert(SB == 0x56);
-  SWAP(B, SB);
-  SWAP(A, RAM(B));
-  ++BL;
+  SB = B;
+  RAM(SAVE_A) = A;
 
-  if (!(readIO(BL) & BIT(3)))
+  if (!(readIO(7) & BIT(3)))
     goto loc_21D;
-  if (!(readIO(BL) & BIT(2)))
+  if (!(readIO(7) & BIT(2)))
     goto loc_239;
-  B = PIF_CMD_L;
+
   readCommand();
-  if (!(RAM(PIF_CMD_L) & BIT(PIF_CMD_L_CHALLENGE))) {
+  if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_CHALLENGE)) {
     sub_713();
     return;
   }
-  B = STATUS;
-  if (!(RAM(STATUS) & BIT(STATUS_TERMINATE_RECV)))
+
+  if (!RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV))
     goto loc_239;
-  sub_709();
+  interruptEpilogID();
   return;
 
 loc_21D:
   halt();
-  B = PIF_CMD_L;
+
   readCommand();
-  if (!(RAM(PIF_CMD_L) & BIT(PIF_CMD_L_JOYBUS)))
+  if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_JOYBUS))
     goto loc_237;
-  RAM(PIF_CMD_L) &= ~BIT(PIF_CMD_L_JOYBUS);
-  sub_F2F();
-  B = 0x10;
-  SWAP(B, SB);
+  RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_JOYBUS);
+
+  regSave();
+  SB = 0x10;
   memFill8();
   sub_92D();
-
-  sub_22C();
+  regRestore();
   return;
 
 loc_237:
-  BM = 5;
-
   interruptEpilog();
   return;
 
@@ -229,10 +256,9 @@ loc_239:
 
 // 02:04
 void interruptB(void) {
-  assert(SB == 0x56);
-  SWAP(B, SB);
-  SWAP(A, RAM(0x56));
-  RAM(STATUS) &= ~BIT(STATUS_TERMINATE_RECV);
+  SB = B;
+  RAM(SAVE_A) = A;
+  RAM_BIT_RESET(STATUS, STATUS_TERMINATE_RECV);
   writeIO(REG_INT_EN, 1);
   writeIO(8, 2);
 
@@ -240,42 +266,31 @@ void interruptB(void) {
 }
 
 // 02:2C
-void sub_22C(void) {
-  B = 0x59;
+void regRestore(void) {
   C = 1;
-  if (!(RAM(0x59) & BIT(0)))
+  if (!RAM_BIT_TEST(SAVE_C, 0))
     C = 0;
-  if (BL--)
-    SWAP(A, RAM(B));
-  u8 X = 0;  // todo: is this value important?
-  if (BL--)
-    SWAP(A, X);
-  sub_C32();
+  X = RAM(SAVE_X);
+  regRestoreSB(SAVE_SBM);
 
   interruptEpilog();
 }
 
 // 02:3B
 void interruptEpilog(void) {
-  assert(BM == 0x5);
-  BL = 6;
-  SWAP(A, RAM(0x56));
-  SWAP(B, SB);
+  A = RAM(SAVE_A);
+  B = SB;
   IME = 1;
 }
 
 // 03:06
 void halt(void) {
-  assert(BM == 5);
-  BL = 0xe;
-  A = 1;
   writeIO(REG_INT_EN, 1);
 
   // todo: should we do anything for halt/standby?
   // HALT = 1;
 
-  if (RAM(STATUS) & BIT(STATUS_TERMINATE_RECV)) {
-    A = 5;
+  if (RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV)) {
     writeIO(REG_INT_EN, 5);
   }
 }
@@ -292,12 +307,12 @@ void cicLoop(void) {
     }
 
     for (;;) {
-      if (!(RAM(STATUS) & BIT(STATUS_TERMINATE_RECV))) {
+      if (!RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV)) {
         cicReset();
         return;
       }
-      if (RAM(STATUS) & BIT(STATUS_CHALLENGE)) {
-        RAM(STATUS) &= ~BIT(STATUS_CHALLENGE);
+      if (RAM_BIT_TEST(STATUS, STATUS_CHALLENGE)) {
+        RAM_BIT_RESET(STATUS, STATUS_CHALLENGE);
         cicChallenge();
         break;
       }
@@ -307,56 +322,37 @@ void cicLoop(void) {
   }
 }
 
+// 03:16
 void cicCompare(void) {
   cicWriteBit(0);
   cicWriteBit(0);
-  BM = 6;
-  sub_E1B();
-  sub_E1B();
-  sub_E1B();
-  BM = 7;
-  sub_E1B();
-  sub_E1B();
-  sub_E1B();
-  B = 0x77;
-  A = RAM(0x77);
-  if (A)
-    A += 0xf;
-  A += 1;
-  if (A)
-    SWAP(A, BL);
+  cicCompareRound(CIC_COMPARE_LO);
+  cicCompareRound(CIC_COMPARE_LO);
+  cicCompareRound(CIC_COMPARE_LO);
+  cicCompareRound(CIC_COMPARE_HI);
+  cicCompareRound(CIC_COMPARE_HI);
+  cicCompareRound(CIC_COMPARE_HI);
+  u8 offset = RAM(CIC_COMPARE_HI + 7);
+  if (!offset)
+    offset = 1;
 
-loc_329:
-  BM = 6;
-  cicWriteBit(RAM(B) & BIT(0));
-  BM = 7;
-  C = cicReadBit();
-  if (C == 0)
-    goto loc_337;
-  if (!(RAM(B) & BIT(0))) {
-    signalError();
-    return;
+  for (; offset < 0x10; ++offset) {
+    cicWriteBit(RAM_BIT_TEST(CIC_COMPARE_LO + offset, 0));
+    bool c = cicReadBit();
+    if (c != RAM_BIT_TEST(CIC_COMPARE_HI + offset, 0)) {
+      signalError();
+    }
   }
-
-loc_334:
-  if (++BL)
-    goto loc_329;
-  return;
-
-loc_337:
-  if (!(RAM(B) & BIT(0)))
-    goto loc_334;
-
-  signalError();
 }
 
 // 03:39
 // disable interrupts and strobe R8 forever
 void signalError(void) {
   IME = 0;
+  u8 a = 0;  // incoming value doesn't really matter
   do {
-    writeIO(8, A);
-    A = ~A;
+    writeIO(8, a);
+    a = ~a;
     fatalError();
   } while (1);
 }
@@ -387,7 +383,7 @@ void boot(void) {
   // wait for rom lockout bit of PIF status byte to become set
   do {
     readCommand();
-  } while (!(RAM(PIF_CMD_U) & BIT(PIF_CMD_U_LOCKOUT)));
+  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_LOCKOUT));
 
   IME = 0;
 
@@ -400,24 +396,24 @@ void boot(void) {
   // wait for checksum verification bit
   do {
     readCommand();
-  } while (!(RAM(PIF_CMD_U) & BIT(PIF_CMD_U_CHECKSUM)));
+  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_CHECKSUM));
 
   IME = 0;
 
   memSwapRanges();
-  RAM(PIF_CMD_U) |= BIT(PIF_CMD_U_CHECKSUM_ACK);
+  RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_CHECKSUM_ACK);
 
   IME = 1;
 
   // wait for clear pif ram bit
   do {
     readCommand();
-  } while (!(RAM(PIF_CMD_U) & BIT(PIF_CMD_U_CLEAR)));
+  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_CLEAR));
 
   IME = 0;
 
   RAM(PIF_CMD_U) = 0;
-  if (C == 0)  // only run on cold boot, not on reset
+  if (reset == 0)  // only run on cold boot, not on reset
     cicChecksum();
 
   // compare checksum
@@ -429,15 +425,13 @@ void boot(void) {
     }
   }
 
-  RAM(BOOT_TIMER + 0) = 0xf;
-  RAM(BOOT_TIMER + 1) = 0xb;
-  memZero(BOOT_TIMER + 2);
+  bootTimerInit(BOOT_TIMER);
 
   IME = 1;
 
   for (;;) {
     readCommand();
-    if (RAM(PIF_CMD_L) & BIT(PIF_CMD_L_TERMINATE))
+    if (RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_TERMINATE))
       break;
 
     bootTimer();
@@ -447,7 +441,7 @@ void boot(void) {
   IME = 0;
   memZero(PIF_CMD_U);
   writeIO(REG_INT_EN, 5);
-  RAM(STATUS) |= BIT(STATUS_TERMINATE_RECV);
+  RAM_BIT_SET(STATUS, STATUS_TERMINATE_RECV);
   IFB = 0;
 
   cicLoop();
@@ -457,65 +451,53 @@ void boot(void) {
 void cicReset(void) {
   cicWriteBit(1);
   cicWriteBit(1);
-  BL = 5;
-  A = 3;
   writeIO(PORT_CIC, 3);
-  memZero(0x0c);
+  memZero(RESET_TIMER);
 
-loc_60A:
-  B = PIF_CMD_U;
-  RAM(PIF_CMD_U) |= BIT(PIF_CMD_U_CHECKSUM_ACK);
-  B = 0x05;
-  if (!(readIO(PORT_CIC) & BIT(3)))
-    goto loc_618;
-  BL = 0xf;
-  if (!increment8() || !increment8())
-    goto loc_60A;
-  signalError();
-  BL = 5;
+  for (;;) {
+    RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_CHECKSUM_ACK);
+    if (!(readIO(PORT_CIC) & BIT(3)))
+      break;
 
-loc_618:
-  A = 1;
+    u8 b = RESET_TIMER_END - 1;
+    if (increment8(&b) && increment8(&b))
+      signalError();
+  }
+
   writeIO(PORT_CIC, 1);
-  BL = 8;
-  A = 0;
 
   while (!(readIO(8) & BIT(3)))
     ;
 
   IME = 0;
-  BL = 6;
-  writeIO(6, A);
-  A = 9;
-  BL = 8;
+  writeIO(6, 0);
   writeIO(8, 9);
-  A = 8;
   writeIO(8, 8);
-  C = 1;
+  reset = 1;
 }
 
 // 06:29
-bool increment8(void) {
-  RAM(B) += 1;
-  if (RAM(B)) {
+bool increment8(u8* address) {
+  RAM(*address) += 1;
+  if (RAM(*address)) {
     return false;
   }
-  BL--;
+  *address -= 1;
 
-  RAM(B) += 1;
-  if (RAM(B)) {
-    ++BL;
+  RAM(*address) += 1;
+  if (RAM(*address)) {
+    *address += 1;
     return false;
   }
-  BL--;
+  *address -= 1;
 
   return true;
 }
 
 // 07:00
 void bootTimer(void) {
-  B = BOOT_TIMER_END - 1;
-  if (!increment8() || !increment8() || !increment8()) {
+  u8 b = BOOT_TIMER_END - 1;
+  if (!increment8(&b) || !increment8(&b) || !increment8(&b)) {
     return;
   }
 
@@ -523,17 +505,17 @@ void bootTimer(void) {
 }
 
 // 07:09
-void sub_709(void) {
-  RAM(PIF_CMD_L) &= ~BIT(PIF_CMD_L_CHALLENGE);
-  RAM(STATUS) |= BIT(STATUS_CHALLENGE);
-  B = 0x56;
-  SWAP(A, RAM(0x56));
-  SWAP(B, SB);
+// leaves interrupts disabled
+void interruptEpilogID(void) {
+  RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_CHALLENGE);
+  RAM_BIT_SET(STATUS, STATUS_CHALLENGE);
+  A = RAM(SAVE_A);
+  B = SB;
 }
 
 // 07:13
 void sub_713(void) {
-  sub_F2F();
+  regSave();
   BL = 0xa;
   A = 4;
   goto loc_71F;
@@ -555,19 +537,19 @@ loc_71F:
   writeIO(0xa, A);
   SWAP(A, BL);
   BM = 4;
-  if (!(RAM(B) & BIT(0)))
+  if (!RAM_BIT_TEST(B, 0))
     goto loc_727;
   sub_C26();
   goto loc_71B;
 
 loc_727:
-  if (!(RAM(B) & BIT(3)))
+  if (!RAM_BIT_TEST(B, 3))
     goto loc_72A;
   goto loc_71B;
 
 loc_72A:
   BM = 1;
-  sub_C32();
+  regRestoreSB(B);
   B = 0x22;
   if (!sub_916())
     goto loc_733;
@@ -582,7 +564,7 @@ loc_738:
   BM = 5;
   halt();
 
-  sub_22C();
+  regRestore();
   return;
 
 loc_800:
@@ -687,7 +669,7 @@ loc_423:
   // todo: read upper half into X?
   SWAP(A, BL);
   BM = 1;
-  sub_C32();
+  regRestoreSB(B);
   BL = 4;
   if (!(readIO(4) & BIT(3)))
     goto loc_433;
@@ -700,7 +682,7 @@ loc_433:
 loc_434:
   SWAP(B, SB);
   if (++BL)
-    sub_D35();
+    B = incrementPtr(B);
   A += RAM(B);
   SWAP(A, RAM(B));
   SWAP(B, SB);
@@ -712,40 +694,35 @@ loc_434:
 
 // 09:00
 void sub_900(void) {
-  B = PIF_CMD_L;
-  if (!(RAM(PIF_CMD_L) & BIT(PIF_CMD_L_2))) {
+  if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_2)) {
     sub_909();
     return;
   }
-  if (!(RAM(PIF_CMD_L) & BIT(PIF_CMD_L_TERMINATE)))
+  if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_TERMINATE))
     sub_909();
   spin256();
 }
 
 // 09:09
 void sub_909(void) {
-  BL = 2;
-  A = 2;
   writeIO(2, 2);
 }
 
 // 09:0D
 void spin256(void) {
-  A = 0;
+  u8 a = 0;
   do {
     SPIN(16);
-  } while (++A);
+  } while (++a & 0xf);
 }
 
 // 09:16
 bool sub_916(void) {
   SWAP(B, SB);
-  if (!(RAM(B) & BIT(3)))
-    goto loc_91A;
-  return true;
+  if (RAM_BIT_TEST(B, 3))
+    return true;
 
-loc_91A:
-  if (!(RAM(B) & BIT(2))) {
+  if (!RAM_BIT_TEST(B, 2)) {
     sub_922();
     return false;
   }
@@ -756,34 +733,31 @@ loc_91A:
 // 09:1F
 void sub_91F(void) {
   SWAP(B, SB);
-  RAM(B) &= ~BIT(3);
-  RAM(B) &= ~BIT(2);
+  RAM_BIT_RESET(B, 3);
+  RAM_BIT_RESET(B, 2);
 
   sub_922();
 }
 
 // 09:22
 void sub_922(void) {
-  A = RAM(B);
+  u8 a = RAM(B);
   SWAP(B, SB);
-  SWAP(A, RAM(B));
-  if (++BL)
-    SWAP(B, SB);
-  if (++BL)
-    A = RAM(B);
-  sub_D35();
+  SWAP(a, RAM(B));
+  ++BL;
   SWAP(B, SB);
-  SWAP(A, RAM(B));
+  if (++BL)
+    a = RAM(B);
+  B = incrementPtr(B);
+  SWAP(B, SB);
+  SWAP(a, RAM(B));
   BM ^= 1;
-  if (BL--)
-    return;
-
-  abort();
+  BL--;
 }
 
 // 09:2D
 void sub_92D(void) {
-  B = 0x80;
+  B = RAM_EXTERNAL;
 
 loc_92F:
   do {
@@ -813,7 +787,7 @@ loc_A03:
     goto loc_A1F;
   SWAP(B, SB);
   BM = 4;
-  RAM(B) |= BIT(0);
+  RAM_BIT_SET(B, 0);
   BM = 1;
   SWAP(B, SB);
   goto loc_A14;
@@ -848,7 +822,7 @@ loc_A1F:
 loc_A20:
   SWAP(A, BM);
 loc_A21:
-  u8 X = A;
+  X = A;
   SWAP(A, BM);
   SWAP(A, X);
   SWAP(B, SB);
@@ -865,8 +839,8 @@ loc_A21:
   if (++BL)
     SWAP(B, SB);
   A = RAM(B);
-  RAM(B) &= ~BIT(2);
-  RAM(B) &= ~BIT(3);
+  RAM_BIT_RESET(B, 2);
+  RAM_BIT_RESET(B, 3);
   SWAP(A, RAM(B));
   if (++BL)
     SWAP(A, X);
@@ -874,7 +848,7 @@ loc_A21:
   SWAP(B, SB);
   BM = 4;
   if (BL--)
-    RAM(B) &= ~BIT(3);
+    RAM_BIT_RESET(B, 3);
   if (++BL)
     BM = 1;
   SWAP(A, X);
@@ -898,35 +872,35 @@ loc_B0A:
 
 loc_B0B:
   A = RAM(B);
-  RAM(B) &= ~BIT(3);
-  RAM(B) &= ~BIT(2);
+  RAM_BIT_RESET(B, 3);
+  RAM_BIT_RESET(B, 2);
   SWAP(A, RAM(B));
   if (++BL)
     SWAP(A, X);
   A = RAM(B);
   SWAP(B, SB);
   BM = 0;
-  C = A + RAM(B) >= 0x10;
+  bool c = A + RAM(B) >= 0x10;
   A = A + RAM(B);
   SWAP(A, RAM(B));
   BM ^= 1;
   SWAP(A, X);
-  bool Cy = A + RAM(B) + C >= 0x10;
-  A = A + RAM(B) + C;
-  C = Cy;
+  bool Cy = A + RAM(B) + c >= 0x10;
+  A = A + RAM(B) + c;
+  c = Cy;
   if (!Cy) {
     SWAP(A, RAM(B));
     BM ^= 1;
   }
   A = RAM(B);
-  C = A + RAM(B) >= 0x10;
+  c = A + RAM(B) >= 0x10;
   A = A + RAM(B);
   SWAP(A, RAM(B));
   BM ^= 1;
   A = RAM(B);
-  Cy = A + RAM(B) + C >= 0x10;
-  A = A + RAM(B) + C;
-  C = Cy;
+  Cy = A + RAM(B) + c >= 0x10;
+  A = A + RAM(B) + c;
+  c = Cy;
   if (!Cy) {
     SWAP(A, RAM(B));
     BM ^= 1;
@@ -934,16 +908,16 @@ loc_B0B:
   SWAP(B, SB);
   SWAP(A, BL);
   SWAP(B, SB);
-  C = A + RAM(B) + 1 >= 0x10;
+  c = A + RAM(B) + 1 >= 0x10;
   A = A + RAM(B) + 1;
   BM = 1;
   SWAP(B, SB);
   SWAP(A, BL);
   SWAP(A, BM);
   SWAP(B, SB);
-  Cy = A + RAM(B) + C >= 0x10;
-  A = A + RAM(B) + C;
-  C = Cy;
+  Cy = A + RAM(B) + c >= 0x10;
+  A = A + RAM(B) + c;
+  c = Cy;
   if (!Cy)
     goto loc_B30;
   goto loc_B3B;
@@ -955,7 +929,7 @@ loc_B30:
 
 loc_B33:
   A = 5;
-  if (5 == BL)
+  if (BL == 5)
     return;
   SWAP(B, SB);
   goto loc_92F;
@@ -966,32 +940,30 @@ loc_B3A:
 loc_B3B:
   if (BL--)
     BM = 4;
-  RAM(B) &= ~BIT(0);
-  RAM(B) |= BIT(3);
+  RAM_BIT_RESET(B, 0);
+  RAM_BIT_SET(B, 3);
 }
 
 // 0C:00
-// read nibble from CIC into [B]
-// increments BL, returns true on carry
+// read nibble from CIC into [address]
 void cicReadNibble(u8 address) {
   RAM(address) = 0xf;
   if (!cicReadBit())
-    RAM(address) &= ~BIT(3);
+    RAM_BIT_RESET(address, 3);
   if (!cicReadBit())
-    RAM(address) &= ~BIT(2);
+    RAM_BIT_RESET(address, 2);
   if (!cicReadBit())
-    RAM(address) &= ~BIT(1);
+    RAM_BIT_RESET(address, 1);
   if (!cicReadBit())
-    RAM(address) &= ~BIT(0);
-  C = 0;
+    RAM_BIT_RESET(address, 0);
 }
 
 // 0C:10
 void cicWriteNibble(u8 address) {
-  cicWriteBit(RAM(address) & BIT(3));
-  cicWriteBit(RAM(address) & BIT(2));
-  cicWriteBit(RAM(address) & BIT(1));
-  cicWriteBit(RAM(address) & BIT(0));
+  cicWriteBit(RAM_BIT_TEST(address, 3));
+  cicWriteBit(RAM_BIT_TEST(address, 2));
+  cicWriteBit(RAM_BIT_TEST(address, 1));
+  cicWriteBit(RAM_BIT_TEST(address, 0));
 }
 
 // 0C:26
@@ -1000,105 +972,71 @@ void sub_C26(void) {
     writeIO(4, 0);
 
   writeIO(2, 3);
-  A = 1;
   writeIO(2, 1);
-  BL = 3;
 
   while (!(readIO(3) & BIT(3)))
     ;
 }
 
 // 0C:32
-void sub_C32(void) {
-  A = RAM(B);
-  BM ^= 1;
-  SWAP(B, SB);
-  SWAP(A, BM);
-  SWAP(B, SB);
-  A = RAM(B);
-  BM ^= 1;
-  SWAP(B, SB);
-  SWAP(A, BL);
-  SWAP(B, SB);
+void regRestoreSB(u8 address) {
+  SBM = RAM(address);
+  SBL = RAM(address ^ 0x10);
 }
 
 // 0D:00
 void cicChallenge(void) {
   cicWriteBit(1);
   cicWriteBit(0);
-  cicReadNibble(0x0a);
-  cicReadNibble(0x0b);
-  B = 0xdd;
-  sub_D1B();
+  cicReadNibble(CIC_CHALLENGE_TIMER_U);
+  cicReadNibble(CIC_CHALLENGE_TIMER_L);
+  cicChallengeTransfer(CIC_CHALLENGE_COUNT_OUT);
 
-  B = 0x0b;
-  while (!increment8())
+  u8 b = CIC_CHALLENGE_TIMER_L;
+  while (!increment8(&b))
     ;
-  C = cicReadBit();
-  B = 0xdf;
-  sub_D1B();
-  BM = 5;
+  cicReadBit();  // return value discarded
+  cicChallengeTransfer(CIC_CHALLENGE_COUNT_IN);
+
   halt();
-  initSB();
+  regInitSB();
 }
 
-void sub_D1B(void) {
-  SWAP(B, SB);
-  B = 0xe0;
-
-loc_D1E:
-  SWAP(B, SB);
-  A = RAM(B);
-  A += 0xf;
-  if (A == 0xf)
-    return;
-  SWAP(A, RAM(B));
-  A = 0xd;
-  if (0xd != BL)
-    goto loc_D2B;
-  SWAP(B, SB);
-  cicWriteNibble(B);
-  ++BL;
-  cicWriteNibble(B);
-  if (++BL)
-    goto loc_D1E;
-  goto loc_D2F;
-
-loc_D2B:
-  SWAP(B, SB);
-  cicReadNibble(B);
-  ++BL;
-  cicReadNibble(B);
-  if (++BL)
-    goto loc_D1E;
-
-loc_D2F:
-  BM = 0xf;
-  goto loc_D1E;
+// 0D:1B
+void cicChallengeTransfer(u8 address) {
+  for (u8 b = CIC_CHALLENGE_LO; RAM(address) != 0; b += 2) {
+    RAM(address) += 0xf;
+    if (address != CIC_CHALLENGE_COUNT_OUT) {
+      cicReadNibble(b + 0);
+      cicReadNibble(b + 1);
+    } else {
+      cicWriteNibble(b + 0);
+      cicWriteNibble(b + 1);
+    }
+  }
 }
 
 // 0D:31
-void initSB(void) {
-  SB = 0x56;
+void regInitSB(void) {
+  SB = SAVE_A;
 }
 
 // 0D:35
-// increment B and wrap to 0x80 on overflow
-void sub_D35(void) {
-  if (++B == 0)
-    B = 0x80;
+// increment address and wrap to 0x80 on overflow
+u8 incrementPtr(u8 address) {
+  if (++address == 0)
+    address = RAM_EXTERNAL;
+  return address;
 }
 
 // 0E:00
 void cicChecksum(void) {
-  B = OSINFO;
-  RAM(OSINFO) |= BIT(OSINFO_RESET);
-  sub_F1B();
-  BL = 5;
-  A = 3;
+  RAM_BIT_SET(OSINFO, OSINFO_RESET);
+
+  cicCompareSeed();
+
   writeIO(PORT_CIC, 3);
   spin256();
-  A = 1;
   writeIO(PORT_CIC, 1);
 
   for (u8 address = CIC_CHECKSUM_BUF; address < CIC_CHECKSUM_END; ++address)
@@ -1109,7 +1047,7 @@ void cicChecksum(void) {
   cicDecode(CIC_CHECKSUM_BUF);
   cicDecode(CIC_CHECKSUM_BUF);
 
-  sub_F00();
+  cicCompareInit();
 }
 
 // 0E:15
@@ -1124,132 +1062,82 @@ void cicDecode(u8 address) {
 }
 
 // 0E:1B
-void sub_E1B(void) {
-  BL = 0xf;
-  A = RAM(B);
-
-  do {
-    u8 X = A;
-    BL = 1;
-    A = A + RAM(B) + 1;
-    SWAP(A, RAM(B));
-    A = RAM(B);
-    ++BL;
-    A = A + RAM(B) + 1;
-    A = ~A;
-    SWAP(A, RAM(B));
-    ++BL;
-    bool Cy = A + RAM(B) + 1 >= 0x10;
-    A = A + RAM(B) + 1;
+void cicCompareRound(u8 address) {
+  for (u8 x = RAM(address + 0xf); x < 0x10; --x) {
+    u8 a = x;
+    u8 b = address + 1;
+    a += RAM(b) + 1;
+    RAM(b) = a;
+    ++b;
+    a += RAM(b) + 1;
+    a = ~a;
+    SWAP(a, RAM(b));
+    ++b;
+    bool Cy = (a & 0xf) + RAM(b) + 1 >= 0x10;
+    a += RAM(b) + 1;
     if (!Cy) {
-      SWAP(A, RAM(B));
-      ++BL;
+      SWAP(a, RAM(b));
+      ++b;
     }
-    A += RAM(B);
-    SWAP(A, RAM(B));
-    A = RAM(B);
-    ++BL;
-    A += RAM(B);
-    SWAP(A, RAM(B));
-    ++BL;
-    Cy = A + 8 >= 0x10;
-    A += 8;
+    a += RAM(b);
+    RAM(b) = a;
+    ++b;
+    a += RAM(b);
+    SWAP(a, RAM(b));
+    ++b;
+    Cy = (a & 0xf) + 8 >= 0x10;
+    a += 8;
     if (!Cy)
-      A += RAM(B);
-    SWAP(A, RAM(B));
-    ++BL;
-
+      a += RAM(b);
+    SWAP(a, RAM(b));
+    ++b;
     do {
-      A += 1;
-      A += RAM(B);
-      SWAP(A, RAM(B));
-      A = RAM(B);
-    } while (++BL);
-    SWAP(A, X);
-    A += 0xf;
-  } while (A != 0xf);
+      a += RAM(b) + 1;
+      RAM(b) = a;
+    } while (++b & 0xf);
+  }
 }
 
 // 0F:00
-void sub_F00(void) {
-  B = 0x60;
-  A = 0;
-  SWAP(A, RAM(0x60));
-  SWAP(B, SB);
-  B = 0x62;
-  do {
-    SWAP(B, SB);
-    A = RAM(B);
-    A += 1;
-    if (A)
-      SWAP(A, RAM(B));
-    SWAP(B, SB);
-    u8 byte = rom[A];
-    A = byte & 0xf;
-    u8 X = byte >> 4;
-    SWAP(A, RAM(B));
-    BM ^= 1;
-    SWAP(A, X);
-    SWAP(A, RAM(B));
-    BM ^= 1;
-  } while (++BL);
-  cicWriteNibble(0x61);
-  cicWriteNibble(0x71);
-  initSB();
+void cicCompareInit(void) {
+  RAM(CIC_COMPARE_LO) = 0;
+  for (u8 offset = 2; offset < 0x10; ++offset) {
+    u8 byte = rom[RAM(CIC_COMPARE_LO)];
+    RAM(CIC_COMPARE_LO) += 1;
+    RAM(CIC_COMPARE_LO + offset) = byte & 0xf;
+    RAM(CIC_COMPARE_HI + offset) = byte >> 4;
+  }
+  cicWriteNibble(CIC_COMPARE_LO + 1);
+  cicWriteNibble(CIC_COMPARE_HI + 1);
+  regInitSB();
 }
 
 // 0F:1B
-void sub_F1B(void) {
-  B = 0x69;
-  A = 1;
+void cicCompareSeed(void) {
   writeIO(9, 1);
 
   do {
-    increment8();
-    BL = 9;
+    u8 b = CIC_COMPARE_LO + 9;
+    increment8(&b);
   } while (!(readIO(9) & BIT(3)));
-  A = 0;
+
   writeIO(9, 0);
 
-  u8 X = {0};  // todo: confirm the value on entry is unimportant
-  SWAP(A, RAM(B));
-  BL--;
-  SWAP(A, X);
-  SWAP(A, RAM(B));
-  BL = 1;
-  SWAP(A, RAM(B));
-  BM ^= 1;
-  SWAP(A, X);
-  SWAP(A, RAM(B));
-  BM ^= 1;
-  // todo: confirm this is equivalent to the above
-  // RAM(0x61) = RAM(0x68);
-  // RAM(0x71) = RAM(0x69);
-  // RAM(0x68) = X;
-  // RAM(0x69) = 0;
+  RAM(CIC_COMPARE_LO + 1) = RAM(CIC_COMPARE_LO + 8);
+  RAM(CIC_COMPARE_HI + 1) = RAM(CIC_COMPARE_LO + 9);
+  RAM(CIC_COMPARE_LO + 8) = 0;  // X is stored here but it's guaranteed to be 0
+  RAM(CIC_COMPARE_LO + 9) = 0;
 }
 
 // 0F:2F
-void sub_F2F(void) {
-  B = 0x57;
-  SWAP(B, SB);
-  SWAP(A, BM);
-  SWAP(B, SB);
-  SWAP(A, RAM(0x57));
-  BM ^= 1;
-  SWAP(B, SB);
-  SWAP(A, BL);
-  SWAP(B, SB);
-  SWAP(A, RAM(0x47));
-  BM ^= 1;
-  ++BL;
-  u8 X = 0;  // todo: is this an in or out param?
-  SWAP(A, X);
-  SWAP(A, RAM(0x58));
-  ++BL;
-  RAM(0x59) |= BIT(0);
+// save SB, X, C
+void regSave(void) {
+  RAM(SAVE_SBM) = SBM;
+  RAM(SAVE_SBL) = SBL;
+  RAM(SAVE_X) = X;
+  RAM_BIT_SET(SAVE_C, 0);
   if (C == 0)
-    RAM(0x59) &= ~BIT(0);
+    RAM_BIT_RESET(SAVE_C, 0);
   C = 0;
 }
 
