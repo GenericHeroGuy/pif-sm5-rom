@@ -104,12 +104,14 @@ void cicCompare(void);
 void signalError(void);
 void memSwapRanges(void);
 void memSwap(u8 address);
+void sub_423(void);
 void boot(void);
 void cicReset(void);
 bool increment8(u8* address);
 void bootTimer(void);
 void interruptEpilogID(void);
 void joybusTransfer(void);
+void joybusTransferChannel(u8 n);
 void sub_900(void);
 void sub_909(void);
 void spin256(void);
@@ -374,6 +376,25 @@ void memSwap(u8 address) {
   } while (++address & 0xf);
 }
 
+// 04:23
+void sub_423(void) {
+  writeIO(2, 0);
+  writeIO(2, 1);
+
+  u8 n = readIO(0xa);
+  u8 sb = readByte(JOYBUS_ADDR_U + n);
+  u8 a;
+  if ((readIO(4) & BIT(3))) {
+    a = 8;
+  } else {
+    a = 4;
+  }
+
+  sb = incrementPtr(sb + 1);
+  RAM(sb) += a;
+  writeIO(4, 0);
+}
+
 // 05:00
 void boot(void) {
   IME = 0;
@@ -519,109 +540,82 @@ void interruptEpilogID(void) {
 // 07:13
 void joybusTransfer(void) {
   regSave();
-  u8 sb;
+
   u8 n = 4;
-  goto loc_71F;
+  do {
+    joybusTransferChannel(n);
+    n = readIO(0xa);
+  } while (n--);
 
-loc_718:
-  writeIO(2, 1);
-
-loc_71B:
-  n = readIO(0xa);
-  if (!n--)
-    goto loc_738;
-
-loc_71F:
-  writeIO(0xa, n);
-  if (RAM_BIT_TEST(JOYBUS_STATUS + n, JOYBUS_STATUS_RESET)) {
-    sub_C26();
-    goto loc_71B;
-  }
-
-  if (RAM_BIT_TEST(JOYBUS_STATUS + n, JOYBUS_STATUS_INITIAL))
-    goto loc_71B;
-
-  sb = readByte(JOYBUS_ADDR_U + n);
-  if (joybusCopySendCount(JOYBUS_SEND_COUNT_U, &sb))
-    goto loc_71B;
-
-  joybusCopyRecvCount(JOYBUS_RECV_COUNT_U, &sb);
-  goto loc_818;
-
-loc_738:
   halt();
 
   regRestore();
-  return;
+}
 
-loc_800:
-  RAM(JOYBUS_SEND_COUNT_U) -= 1;
-  if (RAM(JOYBUS_SEND_COUNT_U) == 0xf)
-    goto loc_81D;  // todo: RAM(B) should contain incoming value of A (junk?)
+// 07:1F
+void joybusTransferChannel(u8 n) {
+  writeIO(0xa, n);
 
-loc_805:
-  if (!(readIO(3) & BIT(2)))
-    goto loc_423;
-  if (!(readIO(3) & BIT(3)))
-    goto loc_805;
-  writeIO(0, RAM(sb + 0));
-  writeIO(0, RAM(sb + 1));
-  sb += 2;
-  if (!sb)
-    sb = RAM_EXTERNAL;
-
-loc_818:
-  RAM(JOYBUS_SEND_COUNT_L) -= 1;
-  if (RAM(JOYBUS_SEND_COUNT_L) == 0xf) {
-    goto loc_800;
+  if (RAM_BIT_TEST(JOYBUS_STATUS + n, JOYBUS_STATUS_RESET)) {
+    sub_C26();
+    return;
   }
-  goto loc_805;
 
-loc_81D:
+  if (RAM_BIT_TEST(JOYBUS_STATUS + n, JOYBUS_STATUS_INITIAL))
+    return;
+
+  u8 sb = readByte(JOYBUS_ADDR_U + n);
+  if (joybusCopySendCount(JOYBUS_SEND_COUNT_U, &sb))
+    return;
+
+  joybusCopyRecvCount(JOYBUS_RECV_COUNT_U, &sb);
+
+  for (;;) {
+    RAM(JOYBUS_SEND_COUNT_L) -= 1;
+    if (RAM(JOYBUS_SEND_COUNT_L) == 0xf) {
+      RAM(JOYBUS_SEND_COUNT_U) -= 1;
+      if (RAM(JOYBUS_SEND_COUNT_U) == 0xf)
+        break;
+    }
+
+    do {
+      if (!(readIO(3) & BIT(2))) {
+        sub_423();
+        return;
+      }
+    } while (!(readIO(3) & BIT(3)));
+
+    writeIO(0, RAM(sb + 0));
+    writeIO(0, RAM(sb + 1));
+    sb += 2;
+    if (!sb)
+      sb = RAM_EXTERNAL;
+  }
+
   sub_900();
-  goto loc_838;
 
-loc_822:
-  RAM(JOYBUS_RECV_COUNT_U) -= 1;
-  if (RAM(JOYBUS_RECV_COUNT_U) == 0xf)
-    goto loc_718;  // todo: RAM(B) should contain incoming value of A (junk?)
+  for (;;) {
+    RAM(JOYBUS_RECV_COUNT_L) -= 1;
+    if (RAM(JOYBUS_RECV_COUNT_L) == 0xf) {
+      RAM(JOYBUS_RECV_COUNT_U) -= 1;
+      if (RAM(JOYBUS_RECV_COUNT_U) == 0xf)
+        break;
+    }
 
-loc_828:
-  if (!(readIO(3) & BIT(2)))
-    goto loc_423;
-  if (!(readIO(3) & BIT(3)))
-    goto loc_828;
-  RAM(sb + 0) = readIO(1);
-  RAM(sb + 1) = readIO(1);
-  sb += 2;
-  if (!sb)
-    sb = RAM_EXTERNAL;
-
-loc_838:
-  RAM(JOYBUS_RECV_COUNT_L) -= 1;
-  if (RAM(JOYBUS_RECV_COUNT_L) == 0xf) {
-    goto loc_822;
+    do {
+      if (!(readIO(3) & BIT(2))) {
+        sub_423();
+        return;
+      }
+    } while (!(readIO(3) & BIT(3)));
+    RAM(sb + 0) = readIO(1);
+    RAM(sb + 1) = readIO(1);
+    sb += 2;
+    if (!sb)
+      sb = RAM_EXTERNAL;
   }
-  goto loc_828;
 
-// 04:23
-loc_423:
-  writeIO(2, 0);
   writeIO(2, 1);
-  n = readIO(0xa);
-  sb = readByte(JOYBUS_ADDR_U + n);
-  u8 a;
-  if ((readIO(4) & BIT(3))) {
-    a = 8;
-  } else {
-    a = 4;
-  }
-
-  sb = incrementPtr(sb + 1);
-  RAM(sb) += a;
-  writeIO(4, 0);
-
-  goto loc_71B;
 }
 
 // 09:00
