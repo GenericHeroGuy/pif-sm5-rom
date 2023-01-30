@@ -10,13 +10,19 @@ constant pifStatusLo = $ff
 constant pifStatusLo.joybus = 0    // run joybus protocol
 constant pifStatusLo.challenge = 1 // send challenge to CIC
 constant pifStatusLo.unknown = 2   // unknown
-constant pifStatusLo.terminate = 3 // terminate boot process
+constant pifStatusLo.terminateBoot = 3 // terminate boot process
 // high 4 bits of PIF status byte
 constant pifStatusHi = $fe
 constant pifStatusHi.lockRom = 0   // lock out PIF-ROM
 constant pifStatusHi.verify = 1    // verify CIC checksum
 constant pifStatusHi.clearRam = 2  // clear all of PIF-RAM
 constant pifStatusHi.response = 3  // CIC checksum verification is complete
+
+// status nibble
+constant pifState = $5e
+constant pifState.challenge = 1
+constant pifState.terminateRecv = 3
+
 // 6-nibble boot timer
 constant bootTimer = $4f // $4e, $4d, $4c, $4b, $4a
 // 6-nibble CIC seed
@@ -32,6 +38,13 @@ constant JOYBUS_DO_TRANSACTION = 3 // if bit clear, do transaction
 constant F_JOYBUS_DO_TRANSACTION = 8
 constant JOYBUS_RESET = 0  // if bit set, reset channel
 constant F_JOYBUS_RESET = 1
+
+// saved registers
+constant saveA = $56
+constant saveBm = $57
+constant saveBl = $47
+constant saveX = $58
+constant saveC = $59
 
 // I/O variables
 
@@ -59,7 +72,7 @@ origin $000
 	trs ClearMemPage // [$34..$3f] = 0
 
 // read CIC type to [$5e]
-	lbx $5e
+	lbx pifState
 	trs TRS_CicReadNibble
 	decb
 
@@ -94,15 +107,15 @@ ResetClearRam:
 -;	trs TRS_CicReadNibble // loop until Bl overflows
 	tr -
 
-// encode seed (2 rounds)
+// decode seed (2 rounds)
 	lblx {low(cicSeed)}
-	trs TRS_CicEncodeSeed
+	trs TRS_CicDecodeSeed
 	lblx {low(cicSeed)}
-	trs TRS_CicEncodeSeed
+	trs TRS_CicDecodeSeed
 
 // copy CIC type to [$1b]
 // this will eventually be written to [$cb] (PIF-RAM $24 bits 0-3)
-	lbx $5e
+	lbx pifState
 	lda 0
 	rm 1
 	rm 3
@@ -121,7 +134,7 @@ origin $040
 
 TRS_IncrementByte:
 	tl IncrementByte
-TRS02:
+TRS_SwapMem:
 	tl SwapMem
 TRS_CicWriteNibble:
 	tl CicWriteNibble
@@ -129,8 +142,8 @@ TRS_LongDelay:
 	tl LongDelay
 TRS08:
 	tl L0E_1B
-TRS_CicEncodeSeed:
-	tl CicEncodeSeed
+TRS_CicDecodeSeed:
+	tl CicDecodeSeed
 TRS_SignalError:
 	tl SignalError
 TRS_CicReadNibble:
@@ -210,35 +223,41 @@ CicEndIo:
 origin $080
 
 InterruptA:
-	ex // B = $56
-	exci 0
+	ex     // B = $56
+	exci 0 // [saveA] <- A
 	tr L02_0E
 	nop
 
 InterruptB:
-	ex
-	exc 0
-	lblx 14
-	rm 3
+	ex     // B = $56
+	exc 0  // [saveA] <- A
+
+	lblx {low(pifState)}
+	rm pifState.terminateRecv
+
 	lax 1
 	out   // RE <- 1 (enable interrupt A)
+
 	lblx 8
 	lax 2
 	out   // R8 <- 2
 	tr L02_3B
 
 L02_0E:
-	tpb 3 // test P6.3
+	tpb 3 // test P7.3
 	tr L02_1D
-	tpb 2 // test P6.2
+	tpb 2 // test P7.2
 	tr L02_39
+
 	lbx pifStatusLo
 	tm pifStatusLo.challenge
 	tl L07_13
-	lbx $5e
-	tm 3
+
+	lbx pifState
+	tm pifState.terminateRecv
 	tr L02_39
 	tl L07_09
+
 L02_1D:
 	call HaltCpu
 
@@ -248,7 +267,7 @@ L02_1D:
 	tr SkipJoybus
 
 	rm 0
-	call L0F_2F
+	call SaveRegs
 	lbx joybusDataPtrHi
 	ex
 	trs ResetJoybusTransactions // [$40..$45] = 8
@@ -298,12 +317,12 @@ CicLoopStart:
 	ie
 
 CicLoop:
-	lbx $5e
-	tm 3
+	lbx pifState
+	tm pifState.terminateRecv
 	tl CicReset
-	tm 1
+	tm pifState.challenge
 	tr CicCompare
-	rm 1
+	rm pifState.challenge
 	tl CicChallenge
 
 CicCompare:
@@ -429,8 +448,8 @@ origin $140
 
 L05_00:
 	id
-	trs TRS02 // SwapMem, return with B = $fe
-	trs ClearMemPage
+	trs TRS_SwapMem  // return with B = $fe
+	trs ClearMemPage // clear PIF status byte
 	lblx 14
 	ie
 
@@ -455,7 +474,7 @@ L05_00:
 	tr -
 
 	id
-	trs TRS02 // SwapMem, return with B = $fe
+	trs TRS_SwapMem // return with B = $fe
 	sm pifStatusHi.response // set checksum response bit
 	ie
 
@@ -486,16 +505,16 @@ L05_22:
 WaitTerminateBit:
 // must be set by CPU within 5 seconds after booting, else system locks up
 	lbx pifStatusLo
-	tm pifStatusLo.terminate
+	tm pifStatusLo.terminateBoot
 	tl IncrementBootTimer
 
 	id
-	lblx 14
+	lblx {low(pifStatusHi)}
 	trs ClearMemPage // clear PIF status byte
-	lbx $5e
+	lbx pifState // Bl <- 14
 	lax 5
 	out   // RE <- 5 (enable interrupt A and B)
-	sm 3
+	sm pifState.terminateRecv
 	tb    // clear interrupt B flag
 	nop
 	tl CicLoopStart
@@ -591,15 +610,15 @@ IncrementBootTimer:
 L07_09:
 	lbx pifStatusLo
 	rm pifStatusLo.challenge
-	lbx $5e
-	sm 1
+	lbx pifState
+	sm pifState.challenge
 	lblx 6
 	exc 0
 	ex
 	rtn
 
 L07_13:
-	call L0F_2F
+	call SaveRegs
 	lblx 10
 	lax 4
 	tr L07_1F
@@ -727,7 +746,7 @@ L09_00:
 	lbx pifStatusLo
 	tm pifStatusLo.unknown
 	tr L09_09
-	tm pifStatusLo.terminate
+	tm pifStatusLo.terminateBoot
 	call L09_09
 	trs TRS_LongDelay
 	rtn
@@ -1172,15 +1191,15 @@ L0E_0D:
 	trs TRS_CicReadNibble
 	tr L0E_0D
 
-// 4 rounds of encoding
-	trs TRS_CicEncodeSeed
-	trs TRS_CicEncodeSeed
-	trs TRS_CicEncodeSeed
-	trs TRS_CicEncodeSeed
+// 4 rounds of decoding
+	trs TRS_CicDecodeSeed
+	trs TRS_CicDecodeSeed
+	trs TRS_CicDecodeSeed
+	trs TRS_CicDecodeSeed
 	tl L0F_00
 
-// encode CIC seed or checksum (one round)
-CicEncodeSeed:
+// decode CIC seed or checksum (one round)
+CicDecodeSeed:
 	lax 15
 -;	coma
 	add
@@ -1282,20 +1301,30 @@ L0F_1F:
 	exc 1
 	rtn
 
-L0F_2F:
-	lbx $57
+// save SB, X and C
+SaveRegs:
+	lbx saveBm
+
+// [saveBm] <- Bm
 	ex
 	exbm
 	ex
 	exc 1
+
+// [saveBl] <- Bl
 	ex
 	exbl
 	ex
 	exci 1
+
+// [saveX] <- X
 	exax
 	exci 0
+
+// [saveC] <- C
 	sm 0
 	tc
 	rm 0
+
 	rc
 	rtn
