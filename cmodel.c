@@ -21,7 +21,19 @@ void checkInterrupt(void);
 
 enum {
   PORT_CIC = 5,
+  PORT_ROM = 6,
+  PORT_RESET = 8,
+  PORT_RNG = 9,    // Used as a RNG, maybe it's an ADC?
   REG_INT_EN = 0xe,
+
+  ROM_LOCKOUT = 1,
+
+  RESET_CPU_IRQ = BIT(1),
+  RESET_CPU_NMI = BIT(0),
+  RESET_BUTTON = BIT(3),
+
+  RNG_START = BIT(0),
+  RNG_DATA = BIT(3),
 };
 
 enum {
@@ -128,11 +140,11 @@ void cicChallenge(void);
 void cicChallengeTransfer(u8 address);
 void regInitSB(void);
 u8 incrementPtr(u8 address);
-void cicChecksum(void);
+void cicCompareInit(void);
 void cicDecode(u8 address);
 void cicCompareRound(u8 address);
-void cicCompareInit(void);
-void cicCompareSeed(void);
+void cicCompareExpandSeed(void);
+void cicCompareCreateSeed(void);
 void regSave(void);
 
 // 00:00
@@ -265,7 +277,7 @@ void interruptB(void) {
   RAM(SAVE_A) = A;
   RAM_BIT_RESET(STATUS, STATUS_TERMINATE_RECV);
   writeIO(REG_INT_EN, 1);
-  writeIO(8, 2);
+  writeIO(PORT_RESET, RESET_CPU_IRQ);
 
   interruptEpilog();
 }
@@ -351,12 +363,12 @@ void cicCompare(void) {
 }
 
 // 03:39
-// disable interrupts and strobe R8 forever
+// disable interrupts and strobe the VR4300 NMI forever
 void signalError(void) {
   IME = 0;
-  u8 a = 0;  // incoming value doesn't really matter
+  u8 a = 0;  // incoming value doesn't really matter, as we're continuously toggling all bits anyway
   do {
-    writeIO(8, a);
+    writeIO(PORT_RESET, a);
     a = ~a;
     fatalError();
   } while (1);
@@ -411,7 +423,7 @@ void boot(void) {
 
   IME = 0;
 
-  writeIO(6, 1);
+  writeIO(PORT_ROM, ROM_LOCKOUT);  // enable ROM lockout
   writeIO(2, 1);
   joybusStatusInit();
 
@@ -438,7 +450,7 @@ void boot(void) {
 
   RAM(PIF_CMD_U) = 0;
   if (reset == 0)  // only run on cold boot, not on reset
-    cicChecksum();
+    cicCompareInit();
 
   // compare checksum
   for (u8 i = 0; i < 0xc; ++i) {
@@ -490,13 +502,13 @@ void cicReset(void) {
 
   writeIO(PORT_CIC, 1);
 
-  while (!(readIO(8) & BIT(3)))
+  while (!(readIO(PORT_RESET) & RESET_BUTTON)) // keep the reset on hold until the button is kept pressed
     ;
 
   IME = 0;
-  writeIO(6, 0);
-  writeIO(8, 9);
-  writeIO(8, 8);
+  writeIO(PORT_ROM, 0);  // disable ROM lockout
+  writeIO(PORT_RESET, RESET_BUTTON | RESET_CPU_NMI);  // pulse NMI on VR4300, not sure why RESET_BUTTON is set here
+  writeIO(PORT_RESET, RESET_BUTTON);
   reset = 1;
 }
 
@@ -831,10 +843,10 @@ u8 incrementPtr(u8 address) {
 }
 
 // 0E:00
-void cicChecksum(void) {
+void cicCompareInit(void) {
   RAM_BIT_SET(OSINFO, OSINFO_RESET);
 
-  cicCompareSeed();
+  cicCompareCreateSeed();
 
   writeIO(PORT_CIC, 3);
   spin256();
@@ -848,7 +860,7 @@ void cicChecksum(void) {
   cicDecode(CIC_CHECKSUM_BUF);
   cicDecode(CIC_CHECKSUM_BUF);
 
-  cicCompareInit();
+  cicCompareExpandSeed();
 }
 
 // 0E:15
@@ -900,7 +912,7 @@ void cicCompareRound(u8 address) {
 }
 
 // 0F:00
-void cicCompareInit(void) {
+void cicCompareExpandSeed(void) {
   RAM(CIC_COMPARE_LO) = 0;
   for (u8 offset = 2; offset < 0x10; ++offset) {
     u8 byte = rom[RAM(CIC_COMPARE_LO)];
@@ -914,15 +926,19 @@ void cicCompareInit(void) {
 }
 
 // 0F:1B
-void cicCompareSeed(void) {
-  writeIO(9, 1);
+void cicCompareCreateSeed(void) {
+  writeIO(PORT_RNG, RNG_START);
 
+  // Keep incrementing CIC_COMPARE_LO+9 until the RNG bit is 0.
+  // When it becomes 1, stop incrementing. We assume that this is
+  // a way to obtain a random number in CIC_COMPARE_LO+9, which is
+  // then used to drive the CIC compare communication.
   do {
     u8 b = CIC_COMPARE_LO + 9;
     increment8(&b);
-  } while (!(readIO(9) & BIT(3)));
+  } while (!(readIO(PORT_RNG) & RNG_DATA));
 
-  writeIO(9, 0);
+  writeIO(PORT_RNG, 0);
 
   RAM(CIC_COMPARE_LO + 1) = RAM(CIC_COMPARE_LO + 8);
   RAM(CIC_COMPARE_HI + 1) = RAM(CIC_COMPARE_LO + 9);
