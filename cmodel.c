@@ -26,7 +26,10 @@ enum {
   PORT_RNG = 9,    // Used as a RNG, maybe it's an ADC?
   REG_INT_EN = 0xe,
 
-  ROM_LOCKOUT = 1,
+  INT_A_EN = BIT(0),
+  INT_B_EN = BIT(2),
+
+  ROM_LOCKOUT = BIT(0),
 
   RESET_CPU_IRQ = BIT(1),
   RESET_CPU_NMI = BIT(0),
@@ -72,7 +75,7 @@ enum {
   SAVE_C = 0x59,
   STATUS = 0x5e,
   STATUS_CHALLENGE = 1,
-  STATUS_TERMINATE_RECV = 3,
+  STATUS_RUNNING = 3,
   CIC_COMPARE_LO = 0x60,
   CIC_COMPARE_LO_END = 0x70,
   CIC_COMPARE_HI = 0x70,
@@ -84,9 +87,9 @@ enum {
   CIC_CHALLENGE_HI = 0xf0,
   PIF_CMD_U = 0xfe,
   PIF_CMD_U_LOCKOUT = 0,
-  PIF_CMD_U_CHECKSUM = 1,
-  PIF_CMD_U_CLEAR = 2,
-  PIF_CMD_U_CHECKSUM_ACK = 3,
+  PIF_CMD_U_GET_CHECKSUM = 1,
+  PIF_CMD_U_CHECK_CHECKSUM = 2,
+  PIF_CMD_U_ACK = 3,
   PIF_CMD_L = 0xff,
   PIF_CMD_L_JOYBUS = 0,
   PIF_CMD_L_CHALLENGE = 1,
@@ -150,7 +153,7 @@ void regSave(void);
 // 00:00
 void start(void) {
   writeIO(PORT_CIC, 1);
-  writeIO(REG_INT_EN, 1);
+  writeIO(REG_INT_EN, INT_A_EN);
 
   regInitSB();
 
@@ -180,13 +183,13 @@ void start(void) {
 
   u8 a = RAM(STATUS);
   RAM_BIT_RESET(STATUS, STATUS_CHALLENGE);
-  RAM_BIT_RESET(STATUS, STATUS_TERMINATE_RECV);
+  RAM_BIT_RESET(STATUS, STATUS_RUNNING);
   RAM(OSINFO) = a;
 
   reset = 0;
 
   for (;;) {
-    RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_CHECKSUM_ACK);
+    RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_ACK);
     IME = 1;
     boot();
   }
@@ -234,6 +237,7 @@ bool cicReadBit(void) {
 }
 
 // 02:00
+// triggered by DMA 64B 
 void interruptA(void) {
   SB = B;
   RAM(SAVE_A) = A;
@@ -246,7 +250,7 @@ void interruptA(void) {
         return;
       }
 
-      if (RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV)) {
+      if (RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {
         interruptEpilogID();
         return;
       }
@@ -275,9 +279,9 @@ void interruptA(void) {
 void interruptB(void) {
   SB = B;
   RAM(SAVE_A) = A;
-  RAM_BIT_RESET(STATUS, STATUS_TERMINATE_RECV);
-  writeIO(REG_INT_EN, 1);
-  writeIO(PORT_RESET, RESET_CPU_IRQ);
+  RAM_BIT_RESET(STATUS, STATUS_RUNNING);  // no more in running mode, we're going to reset
+  writeIO(REG_INT_EN, INT_A_EN);          // disable interrupt B
+  writeIO(PORT_RESET, RESET_CPU_IRQ);     // trigger pre-NMI on VR4300
 
   interruptEpilog();
 }
@@ -301,14 +305,15 @@ void interruptEpilog(void) {
 }
 
 // 03:06
+// wait for interrupt A
 void halt(void) {
-  writeIO(REG_INT_EN, 1);
+  writeIO(REG_INT_EN, INT_A_EN);   // enable A and disable B
 
   // todo: should we do anything for halt/standby?
   // HALT = 1;
 
-  if (RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV)) {
-    writeIO(REG_INT_EN, 5);
+  if (RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {
+    writeIO(REG_INT_EN, INT_A_EN | INT_B_EN);   // reenable B (unless we're already resetting)
   }
 }
 
@@ -324,7 +329,7 @@ void cicLoop(void) {
     }
 
     for (;;) {
-      if (!RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV)) {
+      if (!RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {  // if we're not in running mode, start reset processs
         cicReset();
         return;
       }
@@ -411,7 +416,7 @@ void sub_423(void) {
 void boot(void) {
   IME = 0;
 
-  memSwapRanges();
+  memSwapRanges();  // copy OSINFO (including CIC seeds) from internal memory to external memory
   memZero(PIF_CMD_U);
 
   IME = 1;
@@ -429,22 +434,22 @@ void boot(void) {
 
   IME = 1;
 
-  // wait for checksum verification bit
+  // wait for get checksum bit
   do {
     readCommand();
-  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_CHECKSUM));
+  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_GET_CHECKSUM));
 
   IME = 0;
 
-  memSwapRanges();
-  RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_CHECKSUM_ACK);
+  memSwapRanges();                        // copy PIF_CHECKSUM from external memory to internal memory
+  RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_ACK);  // ack that we received the checksum
 
   IME = 1;
 
-  // wait for clear pif ram bit
+  // wait for check checksum bit
   do {
     readCommand();
-  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_CLEAR));
+  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_CHECK_CHECKSUM));
 
   IME = 0;
 
@@ -452,7 +457,8 @@ void boot(void) {
   if (reset == 0)  // only run on cold boot, not on reset
     cicCompareInit();
 
-  // compare checksum
+  // compare checksum received by CPU to that received by PIF
+  // halt the CPU if it doesn't match
   for (u8 i = 0; i < 0xc; ++i) {
     u8 a = RAM(PIF_CHECKSUM + i);
     RAM(PIF_CHECKSUM + i) = 0;
@@ -476,8 +482,8 @@ void boot(void) {
   // terminate boot process
   IME = 0;
   memZero(PIF_CMD_U);
-  writeIO(REG_INT_EN, 5);
-  RAM_BIT_SET(STATUS, STATUS_TERMINATE_RECV);
+  writeIO(REG_INT_EN, INT_A_EN | INT_B_EN);
+  RAM_BIT_SET(STATUS, STATUS_RUNNING);
   IFB = 0;
 
   cicLoop();
@@ -491,7 +497,7 @@ void cicReset(void) {
   memZero(RESET_TIMER);
 
   for (;;) {
-    RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_CHECKSUM_ACK);
+    RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_ACK);
     if (!(readIO(PORT_CIC) & BIT(3)))
       break;
 
