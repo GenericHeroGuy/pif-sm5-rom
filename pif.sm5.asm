@@ -33,11 +33,9 @@ constant joybusDataPtrLo = $00 // $01, $02, $03, $04, $05
 constant joybusDataPtrHi = $10 // $11, $12, $13, $14, $15
 
 // status for each channel
-constant joybusChannelStatus = $40 // $41, $42, $43, $44, $45
-constant JOYBUS_DO_TRANSACTION = 3 // if bit clear, do transaction
-constant F_JOYBUS_DO_TRANSACTION = 8
-constant JOYBUS_RESET = 0  // if bit set, reset channel
-constant F_JOYBUS_RESET = 1
+constant joybusChStatus = $40 // $41, $42, $43, $44, $45
+constant joybusChStatus.doTransaction = 3 // if bit clear, do transaction
+constant joybusChStatus.reset = 0         // if bit set, reset channel
 
 // saved registers
 constant saveA = $56
@@ -167,8 +165,8 @@ ClearMemPage:
 
 // fill [$40..$45] with 8
 ResetJoybusTransactions:
-	lbx joybusChannelStatus + 5
--;	lax F_JOYBUS_DO_TRANSACTION
+	lbx joybusChStatus + 5
+-;	lax 1<<joybusChStatus.doTransaction
 	excd 0
 	tr -
 	rtn
@@ -251,12 +249,12 @@ L02_0E:
 
 	lbx pifStatusLo
 	tm pifStatusLo.challenge
-	tl L07_13
+	tl JoybusDoTransactions
 
 	lbx pifState
 	tm pifState.terminateRecv
 	tr L02_39
-	tl L07_09
+	tl InterruptAltExit
 
 L02_1D:
 	call HaltCpu
@@ -281,7 +279,7 @@ L02_2C:
 	decb
 	excd 0
 	exax
-	call L0C_32
+	call ReadSplitByte
 	tr L02_3B
 
 SkipJoybus:
@@ -424,7 +422,7 @@ L04_23:
 	in    // A <- RA
 	exbl
 	lbmx 1
-	call L0C_32
+	call ReadSplitByte
 	lblx 4
 	tpb 3 // test P4.3
 	tr L04_33
@@ -435,13 +433,13 @@ L04_33:
 L04_34:
 	ex
 	incb
-	call L0D_35
+	call IncrementPtr
 	add
 	exc 0
 	ex
 	lax 0
 	out   // P4 <- 0
-	tl L07_1B
+	tl JoybusNextChannel
 
 // page 5
 origin $140
@@ -607,55 +605,63 @@ IncrementBootTimer:
 +;	tl WaitTerminateBit
 	trs TRS_SignalError
 
-L07_09:
+InterruptAltExit:
 	lbx pifStatusLo
 	rm pifStatusLo.challenge
 	lbx pifState
 	sm pifState.challenge
-	lblx 6
+
+	lblx {low(saveA)}
 	exc 0
 	ex
 	rtn
 
-L07_13:
+JoybusDoTransactions:
 	call SaveRegs
 	lblx 10
-	lax 4
-	tr L07_1F
+	lax 4   // number of channels
+	tr JoybusCheckChannel
 
 L07_18:
 	lblx 2
 	lax 1
 	out   // P2 <- 1
-L07_1B:
+
+JoybusNextChannel:
 	lblx 10
-	in    // A <- RA
-	adx 15
-	tr L07_38
-L07_1F:
-	out   // RA <- A
+	in        // A <- RA (read back selected channel)
+	adx 15    // decrement, go to next channel
+	tr JoybusEndTransfers // on underflow, end protocol
+
+JoybusCheckChannel:
+	out   // RA <- A (select channel)
 	exbl
-	lbmx 4
-	tm 0
-	tr L07_27
-	call L0C_26
-	tr L07_1B
-L07_27:
-	tm 3
-	tr L07_2A
-	tr L07_1B
-L07_2A:
-	lbmx 1
-	call L0C_32
+	lbmx {high(joybusChStatus)} // B = joybusChStatus[Bl]
+
+// if reset bit is set, reset this channel
+	tm joybusChStatus.reset
+	tr +
+	call JoybusResetChannel
+	tr JoybusNextChannel
+
+// if transaction bit is clear, do transaction
++;	tm joybusChStatus.doTransaction
+	tr JoybusChannelTransaction
+	tr JoybusNextChannel
+
+JoybusChannelTransaction:
+	lbmx {high(joybusDataPtrHi)}
+	call ReadSplitByte // SB = joybusDataPtr[Bl]
 	lbx $22
 	call L09_16
-	tr L07_33
-	tr L07_1B
-L07_33:
-	call L09_1F
+	tr +
+	tr JoybusNextChannel
+
++;	call L09_1F
 	lblx 3
 	tl L08_18
-L07_38:
+
+JoybusEndTransfers:
 	lbmx 5
 	call HaltCpu
 	tl L02_2C
@@ -771,15 +777,14 @@ LongDelayLoop:
 	rtn
 
 L09_16:
-	ex
-	tm 3
-	tr L09_1A
+	ex   // B = joybusDataPtr[SB], SB = $22
+	tm 3 // skip if pointer is inside PIF-RAM
+	tr +
 	rtns
 
-L09_1A:
-	tm 2
++;	tm 2 // reset channel if bit 2 is set, TODO why?
 	tr L09_22
-	call L0C_26
+	call JoybusResetChannel
 	rtns
 
 L09_1F:
@@ -787,18 +792,22 @@ L09_1F:
 	rm 3
 	rm 2
 L09_22:
+// copy [B] to [SB], increment B and SB
 	lda 0
 	ex
 	exci 0
 	ex
 	incb
+
 	lda 0
-	call L0D_35
+	call IncrementPtr
 	ex
 	excd 1
 	rtn
 
 // This routine prepares all six channels for a Joybus transaction.
+// joybusDataPtr[0..5]  = pointer to joybus transaction data in PIF-RAM
+// joybusChStatus[0..5] = mark channel as ready for transfer, or reset it
 PrepareJoybusTransactions:
 	lbx $80
 JoybusLoop:
@@ -836,8 +845,8 @@ JoybusSpecialCommand:
 
 // TX = $fd, mark joybus channel for reset
 	ex
-	lbmx {high(joybusChannelStatus)}
-	sm JOYBUS_RESET
+	lbmx {high(joybusChStatus)}
+	sm joybusChStatus.reset
 	lbmx {high(joybusDataPtrHi)}
 	ex
 	tr L0A_14
@@ -904,9 +913,9 @@ JoybusHandleTx:
 
 // mark channel as ready for transaction
 	ex
-	lbmx {high(joybusChannelStatus)}
+	lbmx {high(joybusChStatus)}
 	decb
-	rm JOYBUS_DO_TRANSACTION
+	rm joybusChStatus.doTransaction
 	incb
 	lbmx {high(joybusDataPtrHi)}
 	exax
@@ -959,7 +968,6 @@ JoybusHandleRx:
 	exax
 	adc
 	exc 1 // write transaction byte count hi
-	      // TODO why skip on overflow?
 
 // B = joybusDataPtrLo
 // convert transaction byte count to nibble count
@@ -1012,9 +1020,9 @@ CancelJoybusCmdEx:
 	ex
 CancelJoybusCmd:
 	decb
-	lbmx {high(joybusChannelStatus)}
-	rm 0 // TODO what's this bit? "cancelled by overflow" bit?
-	sm JOYBUS_DO_TRANSACTION // cancel transaction
+	lbmx {high(joybusChStatus)}
+	rm joybusChStatus.reset         // do not reset this channel
+	sm joybusChStatus.doTransaction // cancel transaction
 	rtn
 
 // page C
@@ -1071,14 +1079,17 @@ CicNibbleEnd:
 	rtn
 	rtns
 
-L0C_23:
+JoybusResetLoop:
 	lblx 4
 	lax 0
 	out   // P4 <- 0
-L0C_26:
+
+// reset joybus channel selected by RA
+JoybusResetChannel:
 	lblx 3
 	tpb 3 // test P3.3
-	tr L0C_23
+	tr JoybusResetLoop
+
 	lblx 2
 	lax 3
 	out   // P2 <- 3
@@ -1090,14 +1101,16 @@ L0C_26:
 	tr -
 	rtn
 
-L0C_32:
+// copy split byte at [B..B^16] to SB
+ReadSplitByte:
 	lda 1
 	ex
-	exbm
+	exbm // SBm <- [B]
 	ex
+
 	lda 1
 	ex
-	exbl
+	exbl // SBl <- [B^16]
 	ex
 	rtn
 
@@ -1163,9 +1176,10 @@ SetSB:
 	rtn
 
 // increment B and wrap to $80 on overflow
-L0D_35:
+IncrementPtr:
 	incb
 	rtn
+
 	exbm
 	adx 1
 	tr +
