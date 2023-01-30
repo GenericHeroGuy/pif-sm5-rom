@@ -457,7 +457,7 @@ void boot(void) {
   if (reset == 0)  // only run on cold boot, not on reset
     cicCompareInit();
 
-  // compare checksum received by CPU to that received by PIF
+  // compare checksum received from CPU to that received from CIC
   // halt the CPU if it doesn't match
   for (u8 i = 0; i < 0xc; ++i) {
     u8 a = RAM(PIF_CHECKSUM + i);
