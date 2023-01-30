@@ -1,0 +1,5 @@
+pif.sm5.rom
+cmodel
+cmodel.*
+!cmodel.[hc]
+user.mk
