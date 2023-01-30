@@ -21,7 +21,22 @@ void checkInterrupt(void);
 
 enum {
   PORT_CIC = 5,
+  PORT_ROM = 6,
+  PORT_RESET = 8,
+  PORT_RNG = 9,    // Used as a RNG, maybe it's an ADC?
   REG_INT_EN = 0xe,
+
+  INT_A_EN = BIT(0),
+  INT_B_EN = BIT(2),
+
+  ROM_LOCKOUT = BIT(0),
+
+  RESET_CPU_IRQ = BIT(1),
+  RESET_CPU_NMI = BIT(0),
+  RESET_BUTTON = BIT(3),
+
+  RNG_START = BIT(0),
+  RNG_DATA = BIT(3),
 };
 
 enum {
@@ -60,7 +75,7 @@ enum {
   SAVE_C = 0x59,
   STATUS = 0x5e,
   STATUS_CHALLENGE = 1,
-  STATUS_TERMINATE_RECV = 3,
+  STATUS_RUNNING = 3,
   CIC_COMPARE_LO = 0x60,
   CIC_COMPARE_LO_END = 0x70,
   CIC_COMPARE_HI = 0x70,
@@ -72,9 +87,9 @@ enum {
   CIC_CHALLENGE_HI = 0xf0,
   PIF_CMD_U = 0xfe,
   PIF_CMD_U_LOCKOUT = 0,
-  PIF_CMD_U_CHECKSUM = 1,
-  PIF_CMD_U_CLEAR = 2,
-  PIF_CMD_U_CHECKSUM_ACK = 3,
+  PIF_CMD_U_GET_CHECKSUM = 1,
+  PIF_CMD_U_CHECK_CHECKSUM = 2,
+  PIF_CMD_U_ACK = 3,
   PIF_CMD_L = 0xff,
   PIF_CMD_L_JOYBUS = 0,
   PIF_CMD_L_CHALLENGE = 1,
@@ -128,17 +143,17 @@ void cicChallenge(void);
 void cicChallengeTransfer(u8 address);
 void regInitSB(void);
 u8 incrementPtr(u8 address);
-void cicChecksum(void);
+void cicCompareInit(void);
 void cicDecode(u8 address);
 void cicCompareRound(u8 address);
-void cicCompareInit(void);
-void cicCompareSeed(void);
+void cicCompareExpandSeed(void);
+void cicCompareCreateSeed(void);
 void regSave(void);
 
 // 00:00
 void start(void) {
   writeIO(PORT_CIC, 1);
-  writeIO(REG_INT_EN, 1);
+  writeIO(REG_INT_EN, INT_A_EN);
 
   regInitSB();
 
@@ -168,13 +183,13 @@ void start(void) {
 
   u8 a = RAM(STATUS);
   RAM_BIT_RESET(STATUS, STATUS_CHALLENGE);
-  RAM_BIT_RESET(STATUS, STATUS_TERMINATE_RECV);
+  RAM_BIT_RESET(STATUS, STATUS_RUNNING);
   RAM(OSINFO) = a;
 
   reset = 0;
 
   for (;;) {
-    RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_CHECKSUM_ACK);
+    RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_ACK);
     IME = 1;
     boot();
   }
@@ -222,6 +237,7 @@ bool cicReadBit(void) {
 }
 
 // 02:00
+// triggered by DMA 64B 
 void interruptA(void) {
   SB = B;
   RAM(SAVE_A) = A;
@@ -234,7 +250,7 @@ void interruptA(void) {
         return;
       }
 
-      if (RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV)) {
+      if (RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {
         interruptEpilogID();
         return;
       }
@@ -263,9 +279,9 @@ void interruptA(void) {
 void interruptB(void) {
   SB = B;
   RAM(SAVE_A) = A;
-  RAM_BIT_RESET(STATUS, STATUS_TERMINATE_RECV);
-  writeIO(REG_INT_EN, 1);
-  writeIO(8, 2);
+  RAM_BIT_RESET(STATUS, STATUS_RUNNING);  // no more in running mode, we're going to reset
+  writeIO(REG_INT_EN, INT_A_EN);          // disable interrupt B
+  writeIO(PORT_RESET, RESET_CPU_IRQ);     // trigger pre-NMI on VR4300
 
   interruptEpilog();
 }
@@ -289,14 +305,15 @@ void interruptEpilog(void) {
 }
 
 // 03:06
+// wait for interrupt A
 void halt(void) {
-  writeIO(REG_INT_EN, 1);
+  writeIO(REG_INT_EN, INT_A_EN);   // enable A and disable B
 
   // todo: should we do anything for halt/standby?
   // HALT = 1;
 
-  if (RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV)) {
-    writeIO(REG_INT_EN, 5);
+  if (RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {
+    writeIO(REG_INT_EN, INT_A_EN | INT_B_EN);   // reenable B (unless we're already resetting)
   }
 }
 
@@ -312,7 +329,7 @@ void cicLoop(void) {
     }
 
     for (;;) {
-      if (!RAM_BIT_TEST(STATUS, STATUS_TERMINATE_RECV)) {
+      if (!RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {  // if we're not in running mode, start reset processs
         cicReset();
         return;
       }
@@ -351,12 +368,12 @@ void cicCompare(void) {
 }
 
 // 03:39
-// disable interrupts and strobe R8 forever
+// disable interrupts and strobe the VR4300 NMI forever
 void signalError(void) {
   IME = 0;
-  u8 a = 0;  // incoming value doesn't really matter
+  u8 a = 0;  // incoming value doesn't really matter, as we're continuously toggling all bits anyway
   do {
-    writeIO(8, a);
+    writeIO(PORT_RESET, a);
     a = ~a;
     fatalError();
   } while (1);
@@ -399,7 +416,7 @@ void sub_423(void) {
 void boot(void) {
   IME = 0;
 
-  memSwapRanges();
+  memSwapRanges();  // copy OSINFO (including CIC seeds) from internal memory to external memory
   memZero(PIF_CMD_U);
 
   IME = 1;
@@ -411,36 +428,37 @@ void boot(void) {
 
   IME = 0;
 
-  writeIO(6, 1);
+  writeIO(PORT_ROM, ROM_LOCKOUT);  // enable ROM lockout
   writeIO(2, 1);
   joybusStatusInit();
 
   IME = 1;
 
-  // wait for checksum verification bit
+  // wait for get checksum bit
   do {
     readCommand();
-  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_CHECKSUM));
+  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_GET_CHECKSUM));
 
   IME = 0;
 
-  memSwapRanges();
-  RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_CHECKSUM_ACK);
+  memSwapRanges();                        // copy PIF_CHECKSUM from external memory to internal memory
+  RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_ACK);  // ack that we received the checksum
 
   IME = 1;
 
-  // wait for clear pif ram bit
+  // wait for check checksum bit
   do {
     readCommand();
-  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_CLEAR));
+  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_CHECK_CHECKSUM));
 
   IME = 0;
 
   RAM(PIF_CMD_U) = 0;
   if (reset == 0)  // only run on cold boot, not on reset
-    cicChecksum();
+    cicCompareInit();
 
-  // compare checksum
+  // compare checksum received from CPU to that received from CIC
+  // halt the CPU if it doesn't match
   for (u8 i = 0; i < 0xc; ++i) {
     u8 a = RAM(PIF_CHECKSUM + i);
     RAM(PIF_CHECKSUM + i) = 0;
@@ -464,8 +482,8 @@ void boot(void) {
   // terminate boot process
   IME = 0;
   memZero(PIF_CMD_U);
-  writeIO(REG_INT_EN, 5);
-  RAM_BIT_SET(STATUS, STATUS_TERMINATE_RECV);
+  writeIO(REG_INT_EN, INT_A_EN | INT_B_EN);
+  RAM_BIT_SET(STATUS, STATUS_RUNNING);
   IFB = 0;
 
   cicLoop();
@@ -479,7 +497,7 @@ void cicReset(void) {
   memZero(RESET_TIMER);
 
   for (;;) {
-    RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_CHECKSUM_ACK);
+    RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_ACK);
     if (!(readIO(PORT_CIC) & BIT(3)))
       break;
 
@@ -490,13 +508,13 @@ void cicReset(void) {
 
   writeIO(PORT_CIC, 1);
 
-  while (!(readIO(8) & BIT(3)))
+  while (!(readIO(PORT_RESET) & RESET_BUTTON)) // keep the reset on hold until the button is kept pressed
     ;
 
   IME = 0;
-  writeIO(6, 0);
-  writeIO(8, 9);
-  writeIO(8, 8);
+  writeIO(PORT_ROM, 0);  // disable ROM lockout
+  writeIO(PORT_RESET, RESET_BUTTON | RESET_CPU_NMI);  // pulse NMI on VR4300, not sure why RESET_BUTTON is set here
+  writeIO(PORT_RESET, RESET_BUTTON);
   reset = 1;
 }
 
@@ -831,10 +849,10 @@ u8 incrementPtr(u8 address) {
 }
 
 // 0E:00
-void cicChecksum(void) {
+void cicCompareInit(void) {
   RAM_BIT_SET(OSINFO, OSINFO_RESET);
 
-  cicCompareSeed();
+  cicCompareCreateSeed();
 
   writeIO(PORT_CIC, 3);
   spin256();
@@ -848,7 +866,7 @@ void cicChecksum(void) {
   cicDecode(CIC_CHECKSUM_BUF);
   cicDecode(CIC_CHECKSUM_BUF);
 
-  cicCompareInit();
+  cicCompareExpandSeed();
 }
 
 // 0E:15
@@ -900,7 +918,7 @@ void cicCompareRound(u8 address) {
 }
 
 // 0F:00
-void cicCompareInit(void) {
+void cicCompareExpandSeed(void) {
   RAM(CIC_COMPARE_LO) = 0;
   for (u8 offset = 2; offset < 0x10; ++offset) {
     u8 byte = rom[RAM(CIC_COMPARE_LO)];
@@ -914,15 +932,19 @@ void cicCompareInit(void) {
 }
 
 // 0F:1B
-void cicCompareSeed(void) {
-  writeIO(9, 1);
+void cicCompareCreateSeed(void) {
+  writeIO(PORT_RNG, RNG_START);
 
+  // Keep incrementing CIC_COMPARE_LO+9 until the RNG bit is 0.
+  // When it becomes 1, stop incrementing. We assume that this is
+  // a way to obtain a random number in CIC_COMPARE_LO+9, which is
+  // then used to drive the CIC compare communication.
   do {
     u8 b = CIC_COMPARE_LO + 9;
     increment8(&b);
-  } while (!(readIO(9) & BIT(3)));
+  } while (!(readIO(PORT_RNG) & RNG_DATA));
 
-  writeIO(9, 0);
+  writeIO(PORT_RNG, 0);
 
   RAM(CIC_COMPARE_LO + 1) = RAM(CIC_COMPARE_LO + 8);
   RAM(CIC_COMPARE_HI + 1) = RAM(CIC_COMPARE_LO + 9);
