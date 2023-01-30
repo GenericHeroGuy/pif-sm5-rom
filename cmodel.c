@@ -41,8 +41,12 @@ enum {
   CIC_CHECKSUM_BUF = 0x20,
   CIC_CHECKSUM = 0x24,
   CIC_CHECKSUM_END = 0x30,
+  JOYBUS_SEND_COUNT_U = 0x22,
+  JOYBUS_SEND_COUNT_L = 0x23,
   PIF_CHECKSUM = 0x34,
   PIF_CHECKSUM_END = 0x40,
+  JOYBUS_RECV_COUNT_U = 0x32,
+  JOYBUS_RECV_COUNT_L = 0x33,
   JOYBUS_STATUS = 0x40,
   JOYBUS_STATUS_RESET = 0,
   JOYBUS_STATUS_INITIAL = 3,
@@ -105,19 +109,19 @@ void cicReset(void);
 bool increment8(u8* address);
 void bootTimer(void);
 void interruptEpilogID(void);
-void sub_713(void);
+void joybusTransfer(void);
 void sub_900(void);
 void sub_909(void);
 void spin256(void);
-bool sub_916(void);
-void sub_91F(void);
-void sub_922(void);
+bool joybusCopySendCount(u8 b, u8* sb);
+void joybusCopyRecvCount(u8 b, u8* sb);
+void joybusCopyByte(u8 b, u8* sb);
 void joybusCommandProcess(void);
 bool joybusCommandAdvance(u8* address, u8 channel);
 void cicReadNibble(u8 address);
 void cicWriteNibble(u8 address);
 void sub_C26(void);
-void regRestoreSB(u8 address);
+u8 readByte(u8 address);
 void cicChallenge(void);
 void cicChallengeTransfer(u8 address);
 void regInitSB(void);
@@ -224,7 +228,7 @@ void interruptA(void) {
     if (readIO(7) & BIT(2)) {
       readCommand();
       if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_CHALLENGE)) {
-        sub_713();
+        joybusTransfer();
         return;
       }
 
@@ -270,7 +274,7 @@ void regRestore(void) {
   if (!RAM_BIT_TEST(SAVE_C, 0))
     C = 0;
   X = RAM(SAVE_X);
-  regRestoreSB(SAVE_SBM);
+  SB = readByte(SAVE_SBM);
 
   interruptEpilog();
 }
@@ -513,179 +517,108 @@ void interruptEpilogID(void) {
 }
 
 // 07:13
-void sub_713(void) {
+void joybusTransfer(void) {
   regSave();
-  BL = 0xa;
-  A = 4;
+  u8 sb;
+  u8 n = 4;
   goto loc_71F;
 
 loc_718:
-  BL = 2;
-  A = 1;
   writeIO(2, 1);
 
 loc_71B:
-  BL = 0xa;
-  A = readIO(0xa);
-  // todo: read upper half into X?
-  A += 0xf;
-  if (A == 0xf)
+  n = readIO(0xa);
+  if (!n--)
     goto loc_738;
 
 loc_71F:
-  writeIO(0xa, A);
-  SWAP(A, BL);
-  BM = 4;
-  if (!RAM_BIT_TEST(B, 0))
-    goto loc_727;
-  sub_C26();
-  goto loc_71B;
+  writeIO(0xa, n);
+  if (RAM_BIT_TEST(JOYBUS_STATUS + n, JOYBUS_STATUS_RESET)) {
+    sub_C26();
+    goto loc_71B;
+  }
 
-loc_727:
-  if (!RAM_BIT_TEST(B, 3))
-    goto loc_72A;
-  goto loc_71B;
+  if (RAM_BIT_TEST(JOYBUS_STATUS + n, JOYBUS_STATUS_INITIAL))
+    goto loc_71B;
 
-loc_72A:
-  BM = 1;
-  regRestoreSB(B);
-  B = 0x22;
-  if (!sub_916())
-    goto loc_733;
-  goto loc_71B;
+  sb = readByte(JOYBUS_ADDR_U + n);
+  if (joybusCopySendCount(JOYBUS_SEND_COUNT_U, &sb))
+    goto loc_71B;
 
-loc_733:
-  sub_91F();
-  BL = 3;
+  joybusCopyRecvCount(JOYBUS_RECV_COUNT_U, &sb);
   goto loc_818;
 
 loc_738:
-  BM = 5;
   halt();
 
   regRestore();
   return;
 
 loc_800:
-  SWAP(A, RAM(B));
-  if (BL--)
-    SWAP(A, RAM(B));
-  A += 0xf;
-  if (A == 0xf)
-    goto loc_81D;
-  SWAP(A, RAM(B));
-  if (!++BL)
-    abort();
+  RAM(JOYBUS_SEND_COUNT_U) -= 1;
+  if (RAM(JOYBUS_SEND_COUNT_U) == 0xf)
+    goto loc_81D;  // todo: RAM(B) should contain incoming value of A (junk?)
 
 loc_805:
-  if (!(readIO(BL) & BIT(2)))
+  if (!(readIO(3) & BIT(2)))
     goto loc_423;
-  if (!(readIO(BL) & BIT(3)))
+  if (!(readIO(3) & BIT(3)))
     goto loc_805;
-  SWAP(B, SB);
-  A = RAM(B);
-  if (++BL)
-    writeIO(0, A);
-  A = RAM(B);
-  writeIO(0, A);
-  if (++BL)
-    goto loc_817;
-  SWAP(A, BM);
-  A += 1;
-  if (A)
-    goto loc_816;
-  A = 8;
-
-loc_816:
-  SWAP(A, BM);
-
-loc_817:
-  SWAP(B, SB);
+  writeIO(0, RAM(sb + 0));
+  writeIO(0, RAM(sb + 1));
+  sb += 2;
+  if (!sb)
+    sb = RAM_EXTERNAL;
 
 loc_818:
-  SWAP(A, RAM(B));
-  A += 0xf;
-  if (A == 0xf)
+  RAM(JOYBUS_SEND_COUNT_L) -= 1;
+  if (RAM(JOYBUS_SEND_COUNT_L) == 0xf) {
     goto loc_800;
-  SWAP(A, RAM(B));
+  }
   goto loc_805;
 
 loc_81D:
   sub_900();
-  B = 0x33;
   goto loc_838;
 
 loc_822:
-  SWAP(A, RAM(B));
-  if (BL--)
-    SWAP(A, RAM(B));
-  A += 0xf;
-  if (A == 0xf)
-    goto loc_718;
-  SWAP(A, RAM(B));
-  if (!++BL)
-    abort();
+  RAM(JOYBUS_RECV_COUNT_U) -= 1;
+  if (RAM(JOYBUS_RECV_COUNT_U) == 0xf)
+    goto loc_718;  // todo: RAM(B) should contain incoming value of A (junk?)
 
 loc_828:
-  if (!(readIO(BL) & BIT(2)))
+  if (!(readIO(3) & BIT(2)))
     goto loc_423;
-  if (!(readIO(BL) & BIT(3)))
+  if (!(readIO(3) & BIT(3)))
     goto loc_828;
-  A = readIO(1);
-  SWAP(B, SB);
-  SWAP(A, RAM(B));
-  if (++BL)
-    A = readIO(1);
-  SWAP(A, RAM(B));
-  if (++BL)
-    goto loc_837;
-  SWAP(A, BM);
-  BM = 8;
-  A += 1;
-  if (A)
-    SWAP(A, BM);
-
-loc_837:
-  SWAP(B, SB);
+  RAM(sb + 0) = readIO(1);
+  RAM(sb + 1) = readIO(1);
+  sb += 2;
+  if (!sb)
+    sb = RAM_EXTERNAL;
 
 loc_838:
-  SWAP(A, RAM(B));
-  A += 0xf;
-  if (A == 0xf)
+  RAM(JOYBUS_RECV_COUNT_L) -= 1;
+  if (RAM(JOYBUS_RECV_COUNT_L) == 0xf) {
     goto loc_822;
-  SWAP(A, RAM(B));
+  }
   goto loc_828;
 
 // 04:23
 loc_423:
-  BL = 2;
-  A = 0;
   writeIO(2, 0);
-  A = 1;
   writeIO(2, 1);
-  BL = 0xa;
-  A = readIO(0xa);
-  // todo: read upper half into X?
-  SWAP(A, BL);
-  BM = 1;
-  regRestoreSB(B);
-  BL = 4;
-  if (!(readIO(4) & BIT(3)))
-    goto loc_433;
-  A = 8;
-  goto loc_434;
+  n = readIO(0xa);
+  sb = readByte(JOYBUS_ADDR_U + n);
+  u8 a;
+  if ((readIO(4) & BIT(3))) {
+    a = 8;
+  } else {
+    a = 4;
+  }
 
-loc_433:
-  A = 4;
-
-loc_434:
-  SWAP(B, SB);
-  if (++BL)
-    B = incrementPtr(B);
-  A += RAM(B);
-  SWAP(A, RAM(B));
-  SWAP(B, SB);
-  A = 0;
+  sb = incrementPtr(sb + 1);
+  RAM(sb) += a;
   writeIO(4, 0);
 
   goto loc_71B;
@@ -695,11 +628,13 @@ loc_434:
 void sub_900(void) {
   if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_2)) {
     sub_909();
-    return;
+  } else {
+    if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_TERMINATE)) {
+      sub_909();
+    }
+
+    spin256();
   }
-  if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_TERMINATE))
-    sub_909();
-  spin256();
 }
 
 // 09:09
@@ -716,42 +651,33 @@ void spin256(void) {
 }
 
 // 09:16
-bool sub_916(void) {
-  SWAP(B, SB);
-  if (RAM_BIT_TEST(B, 3))
+bool joybusCopySendCount(u8 b, u8* sb) {
+  if (RAM_BIT_TEST(*sb, 3)) {
     return true;
-
-  if (!RAM_BIT_TEST(B, 2)) {
-    sub_922();
-    return false;
   }
-  sub_C26();
-  return true;
+
+  if (RAM_BIT_TEST(*sb, 2)) {
+    sub_C26();
+    return true;
+  }
+
+  joybusCopyByte(b, sb);
+  return false;
 }
 
 // 09:1F
-void sub_91F(void) {
-  SWAP(B, SB);
-  RAM_BIT_RESET(B, 3);
-  RAM_BIT_RESET(B, 2);
+void joybusCopyRecvCount(u8 b, u8* sb) {
+  RAM_BIT_RESET(*sb, 3);
+  RAM_BIT_RESET(*sb, 2);
 
-  sub_922();
+  joybusCopyByte(b, sb);
 }
 
 // 09:22
-void sub_922(void) {
-  u8 a = RAM(B);
-  SWAP(B, SB);
-  SWAP(a, RAM(B));
-  ++BL;
-  SWAP(B, SB);
-  if (++BL)
-    a = RAM(B);
-  B = incrementPtr(B);
-  SWAP(B, SB);
-  SWAP(a, RAM(B));
-  BM ^= 1;
-  BL--;
+void joybusCopyByte(u8 b, u8* sb) {
+  RAM(b + 0) = RAM(*sb + 0);
+  RAM(b + 1) = RAM(*sb + 1);
+  *sb = incrementPtr(*sb + 1);
 }
 
 // 09:2D
@@ -801,23 +727,23 @@ bool joybusCommandAdvance(u8* address, u8 channel) {
   u8 b = *address;
   u8 n = channel;
 
-  u8 tx_u = RAM(b + 0) & 3;
-  u8 tx_l = RAM(b + 1);
-  RAM(JOYBUS_ADDR_U + n) = tx_u;
-  RAM(JOYBUS_ADDR_L + n) = tx_l;
+  u8 sendU = RAM(b + 0) & 3;
+  u8 sendL = RAM(b + 1);
+  RAM(JOYBUS_ADDR_U + n) = sendU;
+  RAM(JOYBUS_ADDR_L + n) = sendL;
   b += 2;
   if (!b)
     return true;
 
-  u8 rx_u = RAM(b + 0) & 3;
-  u8 rx_l = RAM(b + 1);
-  u8 cnt = (tx_u << 4) | tx_l;
-  cnt += (rx_u << 4) | rx_l;
-  cnt += cnt;
-  RAM(JOYBUS_ADDR_L + n) = cnt & 0xf;
-  RAM(JOYBUS_ADDR_U + n) = cnt >> 4;
+  u8 recvU = RAM(b + 0) & 3;
+  u8 recvL = RAM(b + 1);
+  u8 count = (sendU << 4) | sendL;
+  count += (recvU << 4) | recvL;
+  count += count;
+  RAM(JOYBUS_ADDR_L + n) = count & 0xf;
+  RAM(JOYBUS_ADDR_U + n) = count >> 4;
 
-  u16 next = b + cnt + 2;
+  u16 next = b + count + 2;
   if (next >= 0x100)
     return true;
 
@@ -860,9 +786,9 @@ void sub_C26(void) {
 }
 
 // 0C:32
-void regRestoreSB(u8 address) {
-  SBM = RAM(address);
-  SBL = RAM(address ^ 0x10);
+// read byte from adjacent memory segments
+u8 readByte(u8 address) {
+  return (RAM(address) << 4) | RAM(address ^ 0x10);
 }
 
 // 0D:00
@@ -886,7 +812,7 @@ void cicChallenge(void) {
 // 0D:1B
 void cicChallengeTransfer(u8 address) {
   for (u8 b = CIC_CHALLENGE_LO; RAM(address) != 0; b += 2) {
-    RAM(address) += 0xf;
+    RAM(address) -= 1;
     if (address != CIC_CHALLENGE_COUNT_OUT) {
       cicReadNibble(b + 0);
       cicReadNibble(b + 1);
