@@ -12,7 +12,6 @@
 // Non-goals:
 // - model every register and memory state transition
 // - model timing
-// - require specific CIC region
 
 FILE* input;
 
@@ -166,10 +165,7 @@ void start(void) {
   memZero(PIF_CHECKSUM);
 
   cicReadNibble(STATUS);
-  if ((RAM(STATUS) & 3) == 1) {
-    // N.B. real PIF ROMs only accept one region
-    regionPAL = RAM_BIT_TEST(STATUS, 2);
-
+  if ((RAM(STATUS) & 3) == 1 && RAM_BIT_TEST(STATUS, 2) == regionPAL) {
     if (RAM_BIT_TEST(STATUS, 3)) {
       RAM(STATUS) = BIT(OSINFO_VERSION) | BIT(OSINFO_64DD);
     } else {
@@ -1011,6 +1007,13 @@ void writeIO(u8 port, u8 value) {
   printf("w %x %x\n", port, value);
 }
 
+void readRegion(void) {
+  printf("r region\n");
+  int value = scanValue();
+  printf("  %x\n", value);
+  regionPAL = value;
+}
+
 void readCommand(void) {
   printf("r cmd\n");
   int value = scanValue();
@@ -1035,5 +1038,6 @@ int main(int argc, char* argv[]) {
   } else {
     input = stdin;
   }
+  readRegion();
   start();
 }
