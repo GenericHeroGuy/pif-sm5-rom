@@ -20,16 +20,23 @@ bool reset = 0;
 void checkInterrupt(void);
 
 enum {
+  PORT_JOYBUS_WRITE = 0,
+  PORT_JOYBUS_READ = 2,
   PORT_CIC = 5,
   PORT_ROM = 6,
+  PORT_RCP_XFER = 7,
   PORT_RESET = 8,
   PORT_RNG = 9,    // Used as a RNG, maybe it's an ADC?
+  PORT_JOYBUS_CHANNEL = 0xa,
   REG_INT_EN = 0xe,
 
   INT_A_EN = BIT(0),
   INT_B_EN = BIT(2),
 
   ROM_LOCKOUT = BIT(0),
+
+  RCP_XFER_READ = BIT(3),
+  RCP_XFER_64B = BIT(2),
 
   RESET_CPU_IRQ = BIT(1),
   RESET_CPU_NMI = BIT(0),
@@ -127,7 +134,7 @@ void bootTimer(void);
 void interruptEpilogID(void);
 void joybusTransfer(void);
 void joybusTransferChannel(u8 n);
-void sub_900(void);
+void joybusWait(void);
 void sub_909(void);
 void spin256(void);
 bool joybusCopySendCount(u8 b, u8* sb);
@@ -137,7 +144,7 @@ void joybusCommandProcess(void);
 bool joybusCommandAdvance(u8* address, u8 channel);
 void cicReadNibble(u8 address);
 void cicWriteNibble(u8 address);
-void sub_C26(void);
+void joybusResetChannel(void);
 u8 readByte(u8 address);
 void cicChallenge(void);
 void cicChallengeTransfer(u8 address);
@@ -242,8 +249,11 @@ void interruptA(void) {
   SB = B;
   RAM(SAVE_A) = A;
 
-  if (readIO(7) & BIT(3)) {
-    if (readIO(7) & BIT(2)) {
+  if (readIO(PORT_RCP_XFER) & RCP_XFER_READ) {
+    if (readIO(PORT_RCP_XFER) & RCP_XFER_64B) {
+
+      // A 64B read was issued by RCP. If the 6105 challenge is requested do that,
+      // otherwise execute the joybus transfer that was last programmed.
       readCommand();
       if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_CHALLENGE)) {
         joybusTransfer();
@@ -260,6 +270,9 @@ void interruptA(void) {
   } else {
     halt();
 
+    // This is either a 4B or a 64B write. Either case, as soon as we see the
+    // joybus command bit (0x1), turn it off and parse the joybus packet
+    // into internal memory (see JOYBUS_*).
     readCommand();
     if (RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_JOYBUS)) {
       RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_JOYBUS);
@@ -398,7 +411,7 @@ void sub_423(void) {
   writeIO(2, 0);
   writeIO(2, 1);
 
-  u8 n = readIO(0xa);
+  u8 n = readIO(PORT_JOYBUS_CHANNEL);
   u8 sb = readByte(JOYBUS_ADDR_U + n);
   u8 a;
   if ((readIO(4) & BIT(3))) {
@@ -562,7 +575,7 @@ void joybusTransfer(void) {
   u8 n = 4;
   do {
     joybusTransferChannel(n);
-    n = readIO(0xa);
+    n = readIO(PORT_JOYBUS_CHANNEL);
   } while (n--);
 
   halt();
@@ -572,10 +585,10 @@ void joybusTransfer(void) {
 
 // 07:1F
 void joybusTransferChannel(u8 n) {
-  writeIO(0xa, n);
+  writeIO(PORT_JOYBUS_CHANNEL, n);
 
   if (RAM_BIT_TEST(JOYBUS_STATUS + n, JOYBUS_STATUS_RESET)) {
-    sub_C26();
+    joybusResetChannel();
     return;
   }
 
@@ -603,14 +616,14 @@ void joybusTransferChannel(u8 n) {
       }
     } while (!(readIO(3) & BIT(3)));
 
-    writeIO(0, RAM(sb + 0));
-    writeIO(0, RAM(sb + 1));
+    writeIO(PORT_JOYBUS_WRITE, RAM(sb + 0));
+    writeIO(PORT_JOYBUS_WRITE, RAM(sb + 1));
     sb += 2;
     if (!sb)
       sb = RAM_EXTERNAL;
   }
 
-  sub_900();
+  joybusWait();
 
   for (;;) {
     RAM(JOYBUS_RECV_COUNT_L) -= 1;
@@ -626,8 +639,8 @@ void joybusTransferChannel(u8 n) {
         return;
       }
     } while (!(readIO(3) & BIT(3)));
-    RAM(sb + 0) = readIO(1);
-    RAM(sb + 1) = readIO(1);
+    RAM(sb + 0) = readIO(PORT_JOYBUS_READ);
+    RAM(sb + 1) = readIO(PORT_JOYBUS_READ);
     sb += 2;
     if (!sb)
       sb = RAM_EXTERNAL;
@@ -637,11 +650,11 @@ void joybusTransferChannel(u8 n) {
 }
 
 // 09:00
-void sub_900(void) {
-  if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_2)) {
+void joybusWait(void) {
+  if (!RAM_BIT_TEST(PIF_CMD_L, BIT(2))) {
     sub_909();
   } else {
-    if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_TERMINATE)) {
+    if (!RAM_BIT_TEST(PIF_CMD_L, BIT(3))) {
       sub_909();
     }
 
@@ -669,7 +682,7 @@ bool joybusCopySendCount(u8 b, u8* sb) {
   }
 
   if (RAM_BIT_TEST(*sb, 2)) {
-    sub_C26();
+    joybusResetChannel();
     return true;
   }
 
@@ -786,7 +799,7 @@ void cicWriteNibble(u8 address) {
 }
 
 // 0C:26
-void sub_C26(void) {
+void joybusResetChannel(void) {
   while (!(readIO(3) & BIT(3)))
     writeIO(4, 0);
 
