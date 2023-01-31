@@ -1,6 +1,11 @@
-pif.sm5.rom: pif.sm5.asm
-	@bass -strict -o $@ $^
+roms: pif.sm5.ntsc.rom pif.sm5.pal.rom
 	@sha256sum -c sha256sums.txt
+
+pif.sm5.ntsc.rom: pif.sm5.asm
+	@bass -strict -c region=0 -o $@ $^
+
+pif.sm5.pal.rom: pif.sm5.asm
+	@bass -strict -c region=1 -o $@ $^
 
 CFLAGS = -g -Wall -Wextra -Wpedantic
 
@@ -12,6 +17,6 @@ run: cmodel
 	./cmodel input.txt
 
 clean:
-	rm -f pif.sm5.rom cmodel cmodel.o
+	rm -f pif.sm5.ntsc.rom pif.sm5.pal.rom cmodel cmodel.o
 
 -include user.mk

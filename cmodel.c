@@ -15,8 +15,6 @@
 
 FILE* input;
 
-bool reset = 0;
-
 void checkInterrupt(void);
 
 enum {
@@ -104,10 +102,17 @@ enum {
   PIF_CMD_L_TERMINATE = 3,
 };
 
+bool reset = 0;
+bool regionPAL = 0;  // compile time constant in real PIF ROMs
+
 // The only non-code data in the ROM, taken from 04:00.
-const u8 rom[] = {
+const u8 romNTSC[] = {
     0x19, 0x4a, 0xf1, 0x88, 0xb5, 0x5a, 0x71,
     0xc3, 0xde, 0x61, 0x10, 0xed, 0x9e, 0x8c,
+};
+const u8 romPAL[] = {
+    0x14, 0x2f, 0x35, 0xf1, 0x82, 0x21, 0x77,
+    0x11, 0x99, 0x88, 0x15, 0x17, 0x55, 0xca,
 };
 
 void start(void);
@@ -167,16 +172,14 @@ void start(void) {
   memZero(PIF_CHECKSUM);
 
   cicReadNibble(STATUS);
-  switch (RAM(STATUS)) {
-    case 1:
-      RAM(STATUS) = BIT(OSINFO_VERSION);
-      break;
-    case 9:
+  if ((RAM(STATUS) & 3) == 1 && RAM_BIT_TEST(STATUS, 2) == regionPAL) {
+    if (RAM_BIT_TEST(STATUS, 3)) {
       RAM(STATUS) = BIT(OSINFO_VERSION) | BIT(OSINFO_64DD);
-      break;
-    default:
-      signalError();
-      break;
+    } else {
+      RAM(STATUS) = BIT(OSINFO_VERSION);
+    }
+  } else {
+    signalError();
   }
 
   for (u8 address = RAM_EXTERNAL; address != 0; address += 0x10)
@@ -371,7 +374,7 @@ void cicCompare(void) {
   if (!offset)
     offset = 1;
 
-  for (; offset < 0x10; ++offset) {
+  for (; (offset & 0xf) != 0; offset += (regionPAL ? -1 : +1)) {
     cicWriteBit(RAM_BIT_TEST(CIC_COMPARE_LO + offset, 0));
     bool c = cicReadBit();
     if (c != RAM_BIT_TEST(CIC_COMPARE_HI + offset, 0)) {
@@ -934,7 +937,7 @@ void cicCompareRound(u8 address) {
 void cicCompareExpandSeed(void) {
   RAM(CIC_COMPARE_LO) = 0;
   for (u8 offset = 2; offset < 0x10; ++offset) {
-    u8 byte = rom[RAM(CIC_COMPARE_LO)];
+    u8 byte = (regionPAL ? romPAL : romNTSC)[RAM(CIC_COMPARE_LO)];
     RAM(CIC_COMPARE_LO) += 1;
     RAM(CIC_COMPARE_LO + offset) = byte & 0xf;
     RAM(CIC_COMPARE_HI + offset) = byte >> 4;
@@ -1017,6 +1020,13 @@ void writeIO(u8 port, u8 value) {
   printf("w %x %x\n", port, value);
 }
 
+void readRegion(void) {
+  printf("r region\n");
+  int value = scanValue();
+  printf("  %x\n", value);
+  regionPAL = value;
+}
+
 void readCommand(void) {
   printf("r cmd\n");
   int value = scanValue();
@@ -1041,5 +1051,6 @@ int main(int argc, char* argv[]) {
   } else {
     input = stdin;
   }
+  readRegion();
   start();
 }

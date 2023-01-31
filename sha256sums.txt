@@ -1,1 +1,3 @@
-ad92d22509e8267cedb3c8a6e48b46a96022e281fabf2c4dc00c1066ab74c801  pif.sm5.rom
+ad92d22509e8267cedb3c8a6e48b46a96022e281fabf2c4dc00c1066ab74c801 *pif.sm5.ntsc.rom
+# Undumped
+e47d437b140d5f21fa5b0ca13c3c3008bfb7fef885363bf83bd0c208c1fb894c *pif.sm5.pal.rom

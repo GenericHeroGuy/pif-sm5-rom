@@ -3,6 +3,10 @@ architecture n64.pif
 define low(value) = {value} & $0f
 define high(value) = ({value} & $f0) >> 4
 
+constant regionNTSC = region == 0
+constant regionPAL = region == 1
+assert(regionNTSC || regionPAL)
+
 // RAM variables
 
 // low 4 bits of PIF status byte (from VR4300 perspective)
@@ -74,15 +78,15 @@ origin $000
 	trs TRS_CicReadNibble
 	decb
 
-// if type == 1, cart
-	lax 1
+// if type == 1 (NTSC) or 5 (PAL), cart
+	lax 1 | region<<2
 	tam
 	tr + // not cart
 	lax 4
 	tr WriteCicType
 
-// if type == 9, 64DD
-+;	lax 9
+// if type == 9 (NTSC) or 13 (PAL), 64DD
++;	lax 9 | region<<2
 	tam
 	trs TRS_SignalError // not 64DD
 	lax 12
@@ -356,7 +360,13 @@ L03_29:
 	tm 0
 	tr SignalError
 L03_34:
+if regionNTSC {
 	incb
+} else if regionPAL {
+	decb
+	lax 0
+	tabl
+}
 	tr L03_29
 	tr CicLoop
 L03_37:
@@ -374,20 +384,11 @@ SignalError:
 // page 4 (PAT data)
 origin $100
 
-	db $19
-	db $4a
-	db $f1
-	db $88
-	db $b5
-	db $5a
-	db $71
-	db $c3
-	db $de
-	db $61
-	db $10
-	db $ed
-	db $9e
-	db $8c
+if regionNTSC {
+	db $19, $4a, $f1, $88, $b5, $5a, $71, $c3, $de, $61, $10, $ed, $9e, $8c
+} else if regionPAL {
+	db $14, $2f, $35, $f1, $82, $21, $77, $11, $99, $88, $15, $17, $55, $ca
+}
 
 // swap internal and external memory
 // [$1b..$1f] <-> [$cb..$cf]

@@ -1,3 +1,5 @@
+# Simulate NTSC region PIF
+0
 # P5 handshake - NTSC region
 0 0 0 8
 # P5 seed - CIC 6102
