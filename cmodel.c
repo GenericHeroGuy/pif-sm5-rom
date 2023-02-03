@@ -20,6 +20,8 @@ void checkInterrupt(void);
 enum {
   PORT_JOYBUS_WRITE = 0,
   PORT_JOYBUS_READ = 2,
+  PORT_JOYBUS_CLOCK = 3,
+  PORT_JOYBUS_ERROR = 4,
   PORT_CIC = 5,
   PORT_ROM = 6,
   PORT_RCP_XFER = 7,
@@ -27,6 +29,13 @@ enum {
   PORT_RNG = 9,    // Used as a RNG, maybe it's an ADC?
   PORT_JOYBUS_CHANNEL = 0xa,
   REG_INT_EN = 0xe,
+
+  JOYBUS_CLOCK = BIT(3),
+
+  JOYBUS_READ_WRITESTOPBIT = BIT(2),
+
+  JOYBUS_ERROR_RESET = 0,
+  JOYBUS_ERROR_NOANSWER = BIT(3),
 
   INT_A_EN = BIT(0),
   INT_B_EN = BIT(2),
@@ -63,6 +72,8 @@ enum {
   CIC_CHECKSUM_END = 0x30,
   JOYBUS_SEND_COUNT_U = 0x22,
   JOYBUS_SEND_COUNT_L = 0x23,
+  JOYBUS_SENDERR_NO_DEVICE = 8,
+  JOYBUS_SENDERR_TIMEOUT = 4,
   PIF_CHECKSUM = 0x34,
   PIF_CHECKSUM_END = 0x40,
   JOYBUS_RECV_COUNT_U = 0x32,
@@ -131,7 +142,7 @@ void cicCompare(void);
 void signalError(void);
 void memSwapRanges(void);
 void memSwap(u8 address);
-void sub_423(void);
+void joybusHandleError(void);
 void boot(void);
 void cicReset(void);
 bool increment8(u8* address);
@@ -140,7 +151,7 @@ void interruptEpilogID(void);
 void joybusTransfer(void);
 void joybusTransferChannel(u8 n);
 void joybusWait(void);
-void sub_909(void);
+void joybusWriteStopBit(void);
 void spin256(void);
 bool joybusCopySendCount(u8 b, u8* sb);
 void joybusCopyRecvCount(u8 b, u8* sb);
@@ -410,22 +421,22 @@ void memSwap(u8 address) {
 }
 
 // 04:23
-void sub_423(void) {
+void joybusHandleError(void) {
   writeIO(2, 0);
   writeIO(2, 1);
 
   u8 n = readIO(PORT_JOYBUS_CHANNEL);
   u8 sb = readByte(JOYBUS_ADDR_U + n);
   u8 a;
-  if ((readIO(4) & BIT(3))) {
-    a = 8;
+  if ((readIO(PORT_JOYBUS_ERROR) & JOYBUS_ERROR_NOANSWER)) {
+    a = JOYBUS_SENDERR_NO_DEVICE;
   } else {
-    a = 4;
+    a = JOYBUS_SENDERR_TIMEOUT;
   }
 
   sb = incrementPtr(sb + 1);
   RAM(sb) += a;
-  writeIO(4, 0);
+  writeIO(PORT_JOYBUS_ERROR, JOYBUS_ERROR_RESET);
 }
 
 // 05:00
@@ -613,11 +624,11 @@ void joybusTransferChannel(u8 n) {
     }
 
     do {
-      if (!(readIO(3) & BIT(2))) {
-        sub_423();
+      if (!(readIO(PORT_JOYBUS_CLOCK) & BIT(2))) {
+        joybusHandleError();
         return;
       }
-    } while (!(readIO(3) & BIT(3)));
+    } while (!(readIO(PORT_JOYBUS_CLOCK) & JOYBUS_CLOCK));
 
     writeIO(PORT_JOYBUS_WRITE, RAM(sb + 0));
     writeIO(PORT_JOYBUS_WRITE, RAM(sb + 1));
@@ -637,11 +648,11 @@ void joybusTransferChannel(u8 n) {
     }
 
     do {
-      if (!(readIO(3) & BIT(2))) {
-        sub_423();
+      if (!(readIO(PORT_JOYBUS_CLOCK) & BIT(2))) {
+        joybusHandleError();
         return;
       }
-    } while (!(readIO(3) & BIT(3)));
+    } while (!(readIO(PORT_JOYBUS_CLOCK) & JOYBUS_CLOCK));
     RAM(sb + 0) = readIO(PORT_JOYBUS_READ);
     RAM(sb + 1) = readIO(PORT_JOYBUS_READ);
     sb += 2;
@@ -655,10 +666,10 @@ void joybusTransferChannel(u8 n) {
 // 09:00
 void joybusWait(void) {
   if (!RAM_BIT_TEST(PIF_CMD_L, BIT(2))) {
-    sub_909();
+    joybusWriteStopBit();
   } else {
     if (!RAM_BIT_TEST(PIF_CMD_L, BIT(3))) {
-      sub_909();
+      joybusWriteStopBit();
     }
 
     spin256();
@@ -666,8 +677,11 @@ void joybusWait(void) {
 }
 
 // 09:09
-void sub_909(void) {
-  writeIO(2, 2);
+void joybusWriteStopBit(void) {
+  // FIXME: it's weird that we need to write to the "read" port
+  // to generate the stopbit. Maybe the "PORT_READ" name isn't
+  // the best?
+  writeIO(PORT_JOYBUS_READ, JOYBUS_READ_WRITESTOPBIT);
 }
 
 // 09:0D
@@ -803,13 +817,13 @@ void cicWriteNibble(u8 address) {
 
 // 0C:26
 void joybusResetChannel(void) {
-  while (!(readIO(3) & BIT(3)))
-    writeIO(4, 0);
+  while (!(readIO(PORT_JOYBUS_CLOCK) & JOYBUS_CLOCK))
+    writeIO(PORT_JOYBUS_ERROR, JOYBUS_ERROR_RESET);
 
   writeIO(2, 3);
   writeIO(2, 1);
 
-  while (!(readIO(3) & BIT(3)))
+  while (!(readIO(PORT_JOYBUS_CLOCK) & JOYBUS_CLOCK))
     ;
 }
 
