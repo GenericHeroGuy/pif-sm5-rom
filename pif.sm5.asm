@@ -10,22 +10,22 @@ assert(regionNTSC || regionPAL)
 // RAM variables
 
 // low 4 bits of PIF status byte (from VR4300 perspective)
-constant pifStatusLo = $ff
-constant pifStatusLo.joybus = 0    // run joybus protocol
-constant pifStatusLo.challenge = 1 // send challenge to CIC
-constant pifStatusLo.unknown = 2   // changes behavior of joybus console stop bit?
-constant pifStatusLo.terminateBoot = 3 // terminate boot process
+constant pifCommandLo = $ff
+constant pifCommandLo.joybus = 0    // run joybus protocol
+constant pifCommandLo.challenge = 1 // send challenge to CIC
+constant pifCommandLo.unknown = 2   // changes behavior of joybus console stop bit?
+constant pifCommandLo.terminateBoot = 3 // terminate boot process
 // high 4 bits of PIF status byte
-constant pifStatusHi = $fe
-constant pifStatusHi.lockRom = 0      // lock out PIF-ROM
-constant pifStatusHi.readChecksum = 1 // when set by VR4300, copy checksum from PIF-RAM
-constant pifStatusHi.testChecksum = 2 // when set by VR4300, begin comparing checksum
-constant pifStatusHi.readAck = 3      // set by PIF to acknowledge reading checksum
+constant pifCommandHi = $fe
+constant pifCommandHi.lockRom = 0      // lock out PIF-ROM
+constant pifCommandHi.readChecksum = 1 // when set by VR4300, copy checksum from PIF-RAM
+constant pifCommandHi.testChecksum = 2 // when set by VR4300, begin comparing checksum
+constant pifCommandHi.readAck = 3      // set by PIF to acknowledge reading checksum
 
 // status nibble
-constant pifState = $5e
-constant pifState.challenge = 1
-constant pifState.resetPending = 3
+constant pifStatus = $5e
+constant pifStatus.challenge = 1
+constant pifStatus.resetPending = 3
 
 // 6-nibble boot timer
 constant bootTimer = $4f // $4e, $4d, $4c, $4b, $4a
@@ -63,7 +63,19 @@ constant saveBl = $47
 constant saveX = $58
 constant saveC = $59
 
+////////////////////////////////////////
 // I/O variables
+
+// joybus status port, provides status of currently selected channel
+constant joyStatusPort = 3
+constant joyStatusPort.error = 2 // if set, error occured during communication
+constant joyStatusPort.busy  = 3 // if set, joybus is busy
+
+// joybus error port. when written to, acknowledges error
+constant joyErrorPort = 4
+constant joyErrorPort.type = 3
+constant JOYBUS_ERR_NO_DEVICE = 1<<3
+constant JOYBUS_ERR_TIMEOUT   = 1<<2
 
 // CIC data port
 constant cicPort = 5
@@ -89,7 +101,7 @@ constant rngPort = 9
 constant rngPort.enable = 0
 constant rngPort.output = 3
 
-// joybus channel port
+// joybus channel select port
 constant joyChannelPort = 10
 
 
@@ -105,8 +117,8 @@ origin $000
 	lbx $34
 	trs ClearMemPage // [$34..$3f] = 0
 
-// write CIC type to pifState
-	lbx pifState
+// write CIC type to pifStatus
+	lbx pifStatus
 	trs TRS_CicReadNibble
 	decb
 
@@ -150,7 +162,7 @@ ClearPifRam:
 
 // copy CIC type to osInfo
 // this will eventually be written to [$cb] (PIF-RAM $24 bits 0-3)
-	lbx pifState
+	lbx pifStatus
 	lda 0
 	rm 1
 	rm 3
@@ -159,8 +171,8 @@ ClearPifRam:
 	rc // reset carry, this is a cold boot
 
 Reboot:
-	lbx pifStatusHi
-	sm pifStatusHi.readAck
+	lbx pifCommandHi
+	sm pifCommandHi.readAck
 	ie
 	tl SystemBoot
 
@@ -261,7 +273,7 @@ origin $080
 InterruptA:
 	ex     // B = $56
 	exci 0 // [saveA] <- A
-	tr L02_0E
+	tr InterruptACont
 	nop
 
 // triggered by reset button
@@ -270,8 +282,8 @@ InterruptB:
 	exc 0  // [saveA] <- A
 
 // signal pending reset
-	lblx {low(pifState)}
-	rm pifState.resetPending
+	lblx {low(pifStatus)}
+	rm pifStatus.resetPending
 
 // disable interrupt B
 	lax 1
@@ -283,30 +295,30 @@ InterruptB:
 	out   // P8 <- 2
 	tr InterruptExit
 
-L02_0E:
+InterruptACont:
 	tpb 3 // test P7.3
 	tr L02_1D
 	tpb 2 // test P7.2
 	tr L02_39
 
-	lbx pifStatusLo
-	tm pifStatusLo.challenge
+	lbx pifCommandLo
+	tm pifCommandLo.challenge
 	tl JoybusDoTransactions
 
-	lbx pifState
-	tm pifState.resetPending
+	lbx pifStatus
+	tm pifStatus.resetPending
 	tr L02_39
 	tl InterruptAltExit
 
 L02_1D:
 	call HaltCpu
 
-// if bit 0 of PIF status byte is set, run joybus protocol
-	lbx pifStatusLo
-	tm pifStatusLo.joybus
+// if bit 0 of PIF command byte is set, run joybus protocol
+	lbx pifCommandLo
+	tm pifCommandLo.joybus
 	tr SkipJoybus
 
-	rm 0
+	rm pifCommandLo.joybus
 	call SaveRegs
 	lbx joybusDataPtrHi
 	ex
@@ -353,19 +365,19 @@ HaltCpu:
 	halt
 	tr StandbyExit
 
+
 CicLoopStart:
 	ie
-
 CicLoop:
-	lbx pifState
+	lbx pifStatus
 
 // check if reset is pending
-	tm pifState.resetPending
+	tm pifStatus.resetPending
 	tl ResetSystem
 
-	tm pifState.challenge
+	tm pifStatus.challenge
 	tr CicCompare
-	rm pifState.challenge
+	rm pifStatus.challenge
 	tl CicChallenge
 
 CicCompare:
@@ -436,49 +448,61 @@ if regionNTSC {
 // [$34..$3f] <-> [$e4..$ef]
 SwapMem:
 	lbx $cb
-	call L04_14
+	call SwapMemLoop
 	lbx $e4
-L04_14:
+SwapMemLoop:
 	exc 0
 	exbm
 	adx 5
 	nop
 	exbm
+
 	exc 0
 	exbm
 	adx 11
 	exbm
 	exc 0
+
 	incb
-	tr L04_14
-	lbx pifStatusHi
+	tr SwapMemLoop
+
+	lbx pifCommandHi
 	rtn
 
-L04_23:
+// error occured when communicating with the joybus device.
+// set either bit 7 or 6 of the RX count byte in PIF-RAM
+JoybusError:
 	lblx 2
 	lax 0
 	out   // P2 <- 0
 	lax 1
 	out   // P2 <- 1
+
+// read current channel's joybusDataPtr into SB
 	lblx joyChannelPort
-	in    // A <- PA
+	in    // A <- PA (get current channel)
 	exbl
-	lbmx 1
+	lbmx {high(joybusDataPtrHi)}
 	call ReadSplitByte
-	lblx 4
-	tpb 3 // test P4.3
-	tr L04_33
-	lax 8
-	tr L04_34
-L04_33:
-	lax 4
-L04_34:
+
+// if error port bit is set, no device was connected
+// if error port bit is clear, transaction timed out
+	lblx joyErrorPort
+	tpb joyErrorPort.type // test P4.3
+	tr +
+	lax JOYBUS_ERR_NO_DEVICE
+	tr JoybusWriteError
++;	lax JOYBUS_ERR_TIMEOUT
+
+JoybusWriteError:
 	ex
 	incb
-	call IncrementPtr
+	call IncrementPtr // go to RX byte
 	add
-	exc 0
+	exc 0 // write error bit
 	ex
+
+//acknowledge error
 	lax 0
 	out   // P4 <- 0
 	tl JoybusNextChannel
@@ -492,11 +516,11 @@ origin $140
 SystemBoot:
 	id
 	trs TRS_SwapMem  // return with B = $fe
-	trs ClearMemPage // clear PIF status byte
-	lblx {low(pifStatusHi)}
+	trs ClearMemPage // clear PIF command byte
+	lblx {low(pifCommandHi)}
 	ie
 
-// wait for rom lockout bit of PIF status byte to become set
+// wait for rom lockout bit of PIF command byte to become set
 -;	tm 0
 	tr -
 
@@ -513,24 +537,24 @@ SystemBoot:
 	trs ResetJoybusTransactions
 
 // wait for VR4300's signal to read checksum from PIF-RAM
-	lbx pifStatusHi
+	lbx pifCommandHi
 	ie
--;	tm pifStatusHi.readChecksum
+-;	tm pifCommandHi.readChecksum
 	tr -
 
 // copy IPL2 checksum from PIF-RAM to internal RAM
 	id
 	trs TRS_SwapMem
-	sm pifStatusHi.readAck // acknowledge reading checksum
+	sm pifCommandHi.readAck // acknowledge reading checksum
 	ie
 
 // wait for VR4300's signal to compare checksums
--;	tm pifStatusHi.testChecksum
+-;	tm pifCommandHi.testChecksum
 	tr -
 
 	id
 	lax 0
-	exc 0 // clear pifStatusHi
+	exc 0 // clear pifCommandHi
 	tc    // call only on cold boot
 	call L0E_00
 
@@ -551,18 +575,18 @@ CompareChecksums:
 
 WaitTerminateBit:
 // must be set by VR4300 within 5 seconds after booting, else system locks up
-	lbx pifStatusLo
-	tm pifStatusLo.terminateBoot
+	lbx pifCommandLo
+	tm pifCommandLo.terminateBoot
 	tl IncrementBootTimer
 
 // bit set, prepare for main loop
 	id
-	lblx {low(pifStatusHi)}
-	trs ClearMemPage // clear PIF status byte
-	lbx pifState // Bl <- 14
+	lblx {low(pifCommandHi)}
+	trs ClearMemPage // clear PIF command byte
+	lbx pifStatus // Bl <- 14
 	lax 5
 	out   // RE <- 5 (enable interrupt A and B)
-	sm pifState.resetPending // clear pending reset flag
+	sm pifStatus.resetPending // clear pending reset flag
 	tb    // clear interrupt B flag
 	nop
 	tl CicLoopStart
@@ -585,8 +609,8 @@ ResetSystem:
 	trs ClearMemPage // clear [$0c..$0f]
 
 ResetWaitCic:
-	lbx pifStatusHi
-	sm pifStatusHi.readAck
+	lbx pifCommandHi
+	sm pifCommandHi.readAck
 
 // has CIC acknowledged reset?
 	lbx $05
@@ -671,10 +695,10 @@ IncrementBootTimer:
 	trs TRS_SignalError
 
 InterruptAltExit:
-	lbx pifStatusLo
-	rm pifStatusLo.challenge
-	lbx pifState
-	sm pifState.challenge
+	lbx pifCommandLo
+	rm pifCommandLo.challenge
+	lbx pifStatus
+	sm pifStatus.challenge
 
 	lblx {low(saveA)}
 	exc 0
@@ -730,7 +754,7 @@ JoybusChannelTransaction:
 +;	call JoybusCopyRxCount
 
 // start the joybus transaction
-	lblx {low(txCountLo)}
+	lblx {low(txCountLo)} // Bl <- joyStatusPort
 	tl JoybusDecTxCount
 
 
@@ -750,9 +774,9 @@ JoybusDecTxCountHi:
 	exci 0
 
 JoybusTxWait:
-	tpb 2 // test P3.2
-	tl L04_23 // TODO error?
-	tpb 3 // test P3.3
+	tpb joyStatusPort.error // test P3.2
+	tl JoybusError
+	tpb joyStatusPort.busy // test P3.3
 	tr JoybusTxWait
 
 // transmit high nibble of PIF-RAM [SB]
@@ -799,9 +823,9 @@ JoybusDecRxCountHi:
 	exci 0
 
 JoybusRxWait:
-	tpb 2 // test P3.2
-	tl L04_23 // TODO error?
-	tpb 3 // test P3.3
+	tpb joyStatusPort.error // test P3.2
+	tl JoybusError
+	tpb joyStatusPort.busy // test P3.3
 	tr JoybusRxWait
 
 // receive high nibble to PIF-RAM [SB]
@@ -841,12 +865,12 @@ origin $240
 
 // send console stop bit to joybus device
 JoybusConsoleStop:
-	lbx pifStatusLo
-	tm pifStatusLo.unknown
+	lbx pifCommandLo
+	tm pifCommandLo.unknown
 	tr SendConsoleStop
 
 // if unknown bit is set, send console stop only if terminateBoot is clear
-	tm pifStatusLo.terminateBoot
+	tm pifCommandLo.terminateBoot
 	call SendConsoleStop
 	trs TRS_LongDelay // and add a long delay
 	rtn
@@ -885,7 +909,7 @@ JoybusCopyTxCount:
 // copy RX count [SB..SB+1] to RX temp [$32..$33]
 JoybusCopyRxCount:
 	ex
-	rm 3 // reset bits 7-6 of RX count in PIF-RAM
+	rm 3 // reset error bits in RX count
 	rm 2
 
 JoybusCopyByte:
@@ -1148,6 +1172,8 @@ CicReadNibble:
 	rc
 	tr CicNibbleEnd
 
+// write nibble at [B] to CIC
+// increments Bl, returns with skip on carry
 CicWriteNibble:
 	lax CIC_WRITE_1
 	tm 3
@@ -1174,15 +1200,17 @@ CicNibbleEnd:
 	rtn
 	rtns
 
+
 JoybusResetLoop:
-	lblx 4
+// acknowledge error
+	lblx joyErrorPort
 	lax 0
 	out   // P4 <- 0
 
 // reset joybus channel selected by PA
 JoybusResetChannel:
-	lblx 3
-	tpb 3 // test P3.3
+	lblx joyStatusPort
+	tpb joyStatusPort.busy // test P3.3
 	tr JoybusResetLoop
 
 	lblx 2
@@ -1191,10 +1219,11 @@ JoybusResetChannel:
 	lax 1
 	out   // P2 <- 1
 
-	lblx 3
--;	tpb 3 // test P3.3
+	lblx joyStatusPort
+-;	tpb joyStatusPort.busy // test P3.3
 	tr -
 	rtn
+
 
 // copy split byte at [B..B^16] to SB
 ReadSplitByte:
@@ -1244,7 +1273,6 @@ L0D_1E:
 	adx 15
 	rtn
 
-L0D_22:
 	exc 0
 	lax 13
 	tabl
@@ -1266,7 +1294,7 @@ L0D_2F:
 
 // set SB = $56
 SetSB:
-	lbx $56
+	lbx saveA
 	ex
 	rtn
 
