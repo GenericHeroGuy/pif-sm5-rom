@@ -880,12 +880,12 @@ JoybusRxWait:
 	tr JoybusRxWait
 
 // receive high nibble to PIF-RAM [SB]
-	inl   // A <- P2
+	inl   // A <- P1
 	ex
 	exci 0
 
 // receive low nibble
-	inl   // A <- P2
+	inl   // A <- P1
 	exci 0
 	tr RxNoOver
 

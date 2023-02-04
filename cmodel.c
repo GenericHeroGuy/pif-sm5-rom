@@ -19,7 +19,7 @@ void checkInterrupt(void);
 
 enum {
   PORT_JOYBUS_WRITE = 0,
-  PORT_JOYBUS_READ = 2,
+  PORT_JOYBUS_READ = 1,
   PORT_JOYBUS_CLOCK = 3,
   PORT_JOYBUS_ERROR = 4,
   PORT_CIC = 5,
@@ -32,7 +32,7 @@ enum {
 
   JOYBUS_CLOCK = BIT(3),
 
-  JOYBUS_READ_WRITESTOPBIT = BIT(2),
+  JOYBUS_WRITESTOPBIT = BIT(1),
 
   JOYBUS_ERROR_RESET = 0,
   JOYBUS_ERROR_NOANSWER = BIT(3),
@@ -678,10 +678,7 @@ void joybusWait(void) {
 
 // 09:09
 void joybusWriteStopBit(void) {
-  // FIXME: it's weird that we need to write to the "read" port
-  // to generate the stopbit. Maybe the "PORT_READ" name isn't
-  // the best?
-  writeIO(PORT_JOYBUS_READ, JOYBUS_READ_WRITESTOPBIT);
+  writeIO(2, JOYBUS_WRITESTOPBIT);
 }
 
 // 09:0D
