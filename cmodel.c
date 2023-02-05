@@ -20,7 +20,8 @@ void checkInterrupt(void);
 enum {
   PORT_JOYBUS_WRITE = 0,
   PORT_JOYBUS_READ = 1,
-  PORT_JOYBUS_CLOCK = 3,
+  PORT_JOYBUS_CTRL = 2,
+  PORT_JOYBUS_STATUS = 3,
   PORT_JOYBUS_ERROR = 4,
   PORT_CIC = 5,
   PORT_ROM = 6,
@@ -30,9 +31,9 @@ enum {
   PORT_JOYBUS_CHANNEL = 0xa,
   REG_INT_EN = 0xe,
 
-  JOYBUS_CLOCK = BIT(3),
+  JOYBUS_STATUS_CLOCK = BIT(3),
 
-  JOYBUS_WRITESTOPBIT = BIT(1),
+  JOYBUS_CTRL_WRITESTOPBIT = BIT(1),
 
   JOYBUS_ERROR_RESET = 0,
   JOYBUS_ERROR_NOANSWER = BIT(3),
@@ -54,8 +55,8 @@ enum {
 };
 
 enum {
-  JOYBUS_ADDR_L = 0x00,
-  JOYBUS_ADDR_U = 0x10,
+  JOYBUS_ADDR_L = 0x00,     // pointer to the start of the frame in external RAM for each joybus channel (low nibble)
+  JOYBUS_ADDR_U = 0x10,     // pointer to the start of the frame in external RAM for each joybus channel (high nibble)
   CIC_CHALLENGE_TIMER_U = 0x0a,
   CIC_CHALLENGE_TIMER_L = 0x0b,
   RESET_TIMER = 0x0c,
@@ -80,7 +81,7 @@ enum {
   JOYBUS_RECV_COUNT_L = 0x33,
   JOYBUS_STATUS = 0x40,
   JOYBUS_STATUS_RESET = 0,
-  JOYBUS_STATUS_INITIAL = 3,
+  JOYBUS_STATUS_SKIP = 3,
   JOYBUS_STATUS_END = 0x46,
   SAVE_SBL = 0x47,
   BOOT_TIMER = 0x4a,
@@ -156,7 +157,7 @@ void spin256(void);
 bool joybusCopySendCount(u8 b, u8* sb);
 void joybusCopyRecvCount(u8 b, u8* sb);
 void joybusCopyByte(u8 b, u8* sb);
-void joybusCommandProcess(void);
+void joybusCommandParse(void);
 bool joybusCommandAdvance(u8* address, u8 channel);
 void cicReadNibble(u8 address);
 void cicWriteNibble(u8 address);
@@ -235,7 +236,7 @@ void memZero(u8 address) {
 // fill [0x40..0x45] with 8
 void joybusStatusInit(void) {
   for (u8 address = JOYBUS_STATUS_END - 1; address >= JOYBUS_STATUS; --address)
-    RAM(address) = BIT(JOYBUS_STATUS_INITIAL);
+    RAM(address) = BIT(JOYBUS_STATUS_SKIP);
 }
 
 // 01:20
@@ -293,7 +294,7 @@ void interruptA(void) {
 
       regSave();
       joybusStatusInit();
-      joybusCommandProcess();
+      joybusCommandParse();
       regRestore();
       return;
     }
@@ -422,8 +423,8 @@ void memSwap(u8 address) {
 
 // 04:23
 void joybusHandleError(void) {
-  writeIO(2, 0);
-  writeIO(2, 1);
+  writeIO(PORT_JOYBUS_CTRL, 0);
+  writeIO(PORT_JOYBUS_CTRL, 1);
 
   u8 n = readIO(PORT_JOYBUS_CHANNEL);
   u8 sb = readByte(JOYBUS_ADDR_U + n);
@@ -456,7 +457,7 @@ void boot(void) {
   IME = 0;
 
   writeIO(PORT_ROM, ROM_LOCKOUT);  // enable ROM lockout
-  writeIO(2, 1);
+  writeIO(PORT_JOYBUS_CTRL, 1);
   joybusStatusInit();
 
   IME = 1;
@@ -494,6 +495,25 @@ void boot(void) {
     }
   }
 
+  // Now start waiting until the CPU set the PIF_CMD_L_TERMINATE bit.
+  // Notice that at this point the RESET button is still disabled (INT_B is disabled). 
+  // The CPU will first initialize RDRAM (in IPL3) and then set the PIF_CMD_L_TERMINATE
+  // bit (in game code[1]). After this bit is set, the RESET button will be enabled.
+  // If the bit is not set before a timeout (approximately 5 seconds), PIF will freeze
+  // the CPU.
+  //
+  // It is important that the RESET button is enabled only after the RDRAM is initialized;
+  // in fact, RDRAM initialization will be skipped[2] by CPU/IPL3 on warm boots (resets,
+  // so if RESET was pressed *before* or *during* RDRAM initialization, on next run
+  // IPL3 would not initialize RDRAM and the console would likely freeze.
+  //
+  // [1] We don't know exactly why IPL3 doesn't set the PIF_CMD_L_TERMINATE bit itself, and
+  //     leave it to game code. Maybe it's just a security by obscurity measure, so that the code
+  //     setting the bit is "hidden" somewhere in game code, making harder to find
+  //     out about it.
+  // [2] Skipping RDRAM initialization on warm boots is a design decision to allow game code
+  //     to store data in RDRAM that will be preserved across reset (see osAppNMIBuffer in
+  //     libultra).
   bootTimerInit(BOOT_TIMER);
 
   IME = 1;
@@ -503,7 +523,7 @@ void boot(void) {
     if (RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_TERMINATE))
       break;
 
-    bootTimer();
+    bootTimerCheck();
   }
 
   // terminate boot process
@@ -564,7 +584,7 @@ bool increment8(u8* address) {
 }
 
 // 07:00
-void bootTimer(void) {
+void bootTimerCheck(void) {
   u8 b = BOOT_TIMER_END - 1;
   if (!increment8(&b) || !increment8(&b) || !increment8(&b)) {
     return;
@@ -606,7 +626,7 @@ void joybusTransferChannel(u8 n) {
     return;
   }
 
-  if (RAM_BIT_TEST(JOYBUS_STATUS + n, JOYBUS_STATUS_INITIAL))
+  if (RAM_BIT_TEST(JOYBUS_STATUS + n, JOYBUS_STATUS_SKIP))
     return;
 
   u8 sb = readByte(JOYBUS_ADDR_U + n);
@@ -624,11 +644,11 @@ void joybusTransferChannel(u8 n) {
     }
 
     do {
-      if (!(readIO(PORT_JOYBUS_CLOCK) & BIT(2))) {
+      if (!(readIO(PORT_JOYBUS_STATUS) & BIT(2))) {
         joybusHandleError();
         return;
       }
-    } while (!(readIO(PORT_JOYBUS_CLOCK) & JOYBUS_CLOCK));
+    } while (!(readIO(PORT_JOYBUS_STATUS) & JOYBUS_STATUS_CLOCK));
 
     writeIO(PORT_JOYBUS_WRITE, RAM(sb + 0));
     writeIO(PORT_JOYBUS_WRITE, RAM(sb + 1));
@@ -648,11 +668,11 @@ void joybusTransferChannel(u8 n) {
     }
 
     do {
-      if (!(readIO(PORT_JOYBUS_CLOCK) & BIT(2))) {
+      if (!(readIO(PORT_JOYBUS_STATUS) & BIT(2))) {
         joybusHandleError();
         return;
       }
-    } while (!(readIO(PORT_JOYBUS_CLOCK) & JOYBUS_CLOCK));
+    } while (!(readIO(PORT_JOYBUS_STATUS) & JOYBUS_STATUS_CLOCK));
     RAM(sb + 0) = readIO(PORT_JOYBUS_READ);
     RAM(sb + 1) = readIO(PORT_JOYBUS_READ);
     sb += 2;
@@ -660,7 +680,7 @@ void joybusTransferChannel(u8 n) {
       sb = RAM_EXTERNAL;
   }
 
-  writeIO(2, 1);
+  writeIO(PORT_JOYBUS_CTRL, 1);
 }
 
 // 09:00
@@ -678,7 +698,7 @@ void joybusWait(void) {
 
 // 09:09
 void joybusWriteStopBit(void) {
-  writeIO(2, JOYBUS_WRITESTOPBIT);
+  writeIO(PORT_JOYBUS_CTRL, JOYBUS_CTRL_WRITESTOPBIT);
 }
 
 // 09:0D
@@ -720,41 +740,70 @@ void joybusCopyByte(u8 b, u8* sb) {
 }
 
 // 09:2D
-void joybusCommandProcess(void) {
+// Parse the JoyBus commands in external RAM. No joybus transactions
+// are actually performed here. The commands are parsed and the pointer
+// to the start of the frame of each channel is written to JOYBUS_ADDR_U/L[channel].
+void joybusCommandParse(void) {
   u8 b = RAM_EXTERNAL;
   u8 n = 0;
 
+  // Joybus commands in PIF-RAM are a sequences of frames, one frame per channel, in strict
+  // order 0-4 (max 5 channels).
+  //
+  // This is a frame:
+  //   TX RX tt[...] rr[...]
+  //
+  // where:
+  //   * TX contains the number of bytes to transmit to the device (00-3F, top 2 bits are ignored)
+  //   * RX contains the number of bytes to receive from the device (00-3F, top 2 bits are ignored)
+  //   * tt is the data to transmit (must be exactly TX bytes)
+  //   * rr is the space where received data will be written (must be exactly RX bytes)
+  // 
+  // There are some special values for TX that are used as special 1-byte "commands" (with no RX
+  // or other data):
+  //   * 0x00: skip current channel
+  //   * 0xfd: reset current channel
+  //   * 0xfe: abort processing (no other frames are parsed)
+  //   * 0xff: nop
+  //
+  // After 5 frames, parsing is interrupted and the rest of RAM is ignored.
+  //
+  // At joybus execution time, the top 2 bits of TX are used for special functions:
+  //   * Bit 7 set (TX values 0x80-0xFC): channel is skipped (identical behavior to 0x00)
+  //   * Bit 6 set (TX values 0x40-0x7F): channel is reset (identical behavior to 0xfd)
+
   do {
-    u8 cmd = (RAM(b) << 4) | RAM(b + 1);
+    // Read tx count
+    u8 tx = (RAM(b) << 4) | RAM(b + 1);
 
     // stop processing
-    if (cmd == 0xfe)
+    if (tx == 0xfe)
       break;
 
     // reset channel
-    if (cmd == 0xfd) {
+    if (tx == 0xfd) {
       RAM_BIT_SET(JOYBUS_STATUS + n, JOYBUS_STATUS_RESET);
     }
 
-    if (cmd == 0xff || cmd == 0xfd || cmd == 0x00) {
+    if (tx == 0xff || tx == 0xfd || tx == 0x00) {
       // fixed length commands
       b += 2;
       if (!b)
         break;
 
-      if (cmd != 0xff)
+      if (tx != 0xff)
         ++n;
     } else {
       // variable length commands
       RAM(JOYBUS_ADDR_U + n) = b >> 4;
       RAM(JOYBUS_ADDR_L + n) = b & 0xf;
-      RAM_BIT_RESET(JOYBUS_STATUS + n, JOYBUS_STATUS_INITIAL);
+      RAM_BIT_RESET(JOYBUS_STATUS + n, JOYBUS_STATUS_SKIP);
       ++n;
 
       if (joybusCommandAdvance(&b, n)) {
         n--;
         RAM_BIT_RESET(JOYBUS_STATUS + n, JOYBUS_STATUS_RESET);
-        RAM_BIT_SET(JOYBUS_STATUS + n, JOYBUS_STATUS_INITIAL);
+        RAM_BIT_SET(JOYBUS_STATUS + n, JOYBUS_STATUS_SKIP);
         break;
       }
     }
@@ -768,8 +817,8 @@ bool joybusCommandAdvance(u8* address, u8 channel) {
 
   u8 sendU = RAM(b + 0) & 3;
   u8 sendL = RAM(b + 1);
-  RAM(JOYBUS_ADDR_U + n) = sendU;
-  RAM(JOYBUS_ADDR_L + n) = sendL;
+  RAM(JOYBUS_ADDR_U + n) = sendU;   // NOTE: this is just used as scratch space (it will be overwritten later)
+  RAM(JOYBUS_ADDR_L + n) = sendL;   // NOTE: this is just used as scratch space (it will be overwritten later)
   b += 2;
   if (!b)
     return true;
@@ -779,8 +828,8 @@ bool joybusCommandAdvance(u8* address, u8 channel) {
   u8 count = (sendU << 4) | sendL;
   count += (recvU << 4) | recvL;
   count += count;
-  RAM(JOYBUS_ADDR_L + n) = count & 0xf;
-  RAM(JOYBUS_ADDR_U + n) = count >> 4;
+  RAM(JOYBUS_ADDR_L + n) = count & 0xf;   // NOTE: this is just used as scratch space (it will be overwritten later)
+  RAM(JOYBUS_ADDR_U + n) = count >> 4;    // NOTE: this is just used as scratch space (it will be overwritten later)
 
   u16 next = b + count + 2;
   if (next >= 0x100)
@@ -814,13 +863,13 @@ void cicWriteNibble(u8 address) {
 
 // 0C:26
 void joybusResetChannel(void) {
-  while (!(readIO(PORT_JOYBUS_CLOCK) & JOYBUS_CLOCK))
+  while (!(readIO(PORT_JOYBUS_STATUS) & JOYBUS_STATUS_CLOCK))
     writeIO(PORT_JOYBUS_ERROR, JOYBUS_ERROR_RESET);
 
-  writeIO(2, 3);
-  writeIO(2, 1);
+  writeIO(PORT_JOYBUS_CTRL, 3);
+  writeIO(PORT_JOYBUS_CTRL, 1);
 
-  while (!(readIO(PORT_JOYBUS_CLOCK) & JOYBUS_CLOCK))
+  while (!(readIO(PORT_JOYBUS_STATUS) & JOYBUS_STATUS_CLOCK))
     ;
 }
 
