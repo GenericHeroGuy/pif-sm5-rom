@@ -38,7 +38,7 @@ constant pifCommandHi.readAck = 3      // set by PIF to acknowledge reading chec
 
 // status nibble
 constant pifStatus = $5e
-constant pifStatus.doChallenge = 1    // if set, run CIC challenge protocol
+constant pifStatus.doChallenge = 1  // if set, run CIC challenge protocol
 constant pifStatus.resetPending = 3 // if clear, reset is pending
 
 // 6-nibble boot timer
@@ -123,7 +123,7 @@ constant joyChannelPort = 10
 // interrupt enable mode register
 constant intRegister = 14
 constant intRegister.A = 0 // enable interrupt A (RCP SI)
-constant intRegister.B = 2// enable interrupt B (Reset button)
+constant intRegister.B = 2 // enable interrupt B (Reset button)
 
 ////////////////////////////////////////
 // Enums
@@ -135,16 +135,20 @@ constant CIC_WRITE_OFF = {bit(cicPort.data)}
 constant JOYBUS_ERR_NO_DEVICE = {bit(3)}
 constant JOYBUS_ERR_TIMEOUT = {bit(2)}
 
-
-// page 0 (reset vector)
+////////////////////////////////////////
+// Page 0 (reset vector)
 origin $000
 
+ResetVector: // 00:00
 	lax CIC_WRITE_OFF
 	lblx cicPort
-	out   // P5 <- 1
+	out // P5 <- 1
+
+// enable interrupt A (RCP)
 	lblx intRegister
-	out   // RE <- 1 (enable interrupt A)
+	out // RE <- 1
 	trs TRS_SetSB // SB = saveA
+
 	lbx $34
 	trs ClearMemPage // [$34..$3f] = 0
 
@@ -161,21 +165,21 @@ origin $000
 	lax {bit(osInfo.version)}
 	tr WriteCicType
 
+NotCart: // 00:12
 // if type == 9 (NTSC) or 13 (PAL), 64DD
-NotCart:
 	lax 9 | region<<2
 	tam
 	trs TRS_SignalError // not cart or 64DD
 
 	lax {bit(osInfo.64dd)} | {bit(osInfo.version)}
 
-WriteCicType:
+WriteCicType: // 00:16
 	exc 0
 
 // clear all of PIF-RAM
 	lbx $80
 	tr +
-ClearPifRam:
+ClearPifRam: // 00:1A
 	exbm
 +;	trs ClearMemPage
 	exbm
@@ -184,7 +188,7 @@ ClearPifRam:
 
 // write CIC seed to [$1a..$1f]
 	lbx cicSeed
--;	trs TRS_CicReadNibble // loop until Bl overflows
+-;	trs TRS_CicReadNibble
 	tr -
 
 // decode seed (2 rounds)
@@ -197,98 +201,104 @@ ClearPifRam:
 // this will eventually be written to [$cb] (PIF-RAM $24 bits 0-3)
 	lbx pifStatus
 	lda 0
-	rm pifStatus.doChallenge    // clear challenge bit
+	rm pifStatus.doChallenge // clear challenge bit
 	rm pifStatus.resetPending // set pending reset flag (for some reason?)
 	lbx osInfo
 	excd 0
 
 	rc // reset carry, this is a cold boot
 
-Reboot:
+Reboot: // 00:30
 	lbx pifCommandHi
 	sm pifCommandHi.readAck
 	ie
 	tl SystemBoot
 
+////////////////////////////////////////
 // page 1 (TRS vectors)
 origin $040
 
-TRS_IncrementByte:
+TRS_IncrementByte: // 01:00
 	tl IncrementByte
-TRS_SwapMem:
+TRS_SwapMem: // 01:02
 	tl SwapMem
-TRS_CicWriteNibble:
+TRS_CicWriteNibble: // 01:04
 	tl CicWriteNibble
-TRS_LongDelay:
+TRS_LongDelay: // 01:06
 	tl LongDelay
-TRS08:
+TRS08: // 01:08
 	tl L0E_1B
-TRS_CicDecodeSeed:
+TRS_CicDecodeSeed: // 01:0A
 	tl CicDecodeSeed
-TRS_SignalError:
+TRS_SignalError: // 01:0C
 	tl SignalError
-TRS_CicReadNibble:
+TRS_CicReadNibble: // 01:0E
 	tl CicReadNibble
-TRS_SetSB:
+TRS_SetSB: // 01:10
 	tl SetSB
 
-// write $fb to [B] and zero rest of segment
-InitBootTimer:
+
+// write $fb to [B] and zero rest of page
+InitBootTimer: // 01:12
 	lax 15
 	exci 0
 	lax 11
 	exci 0
 
-// zero memory from B to end of segment
-ClearMemPage:
+// zero memory from B to end of page
+ClearMemPage: // 01:16
 	lax 0
 	exci 0
 	tr ClearMemPage
 	rtn
 
 // fill [$40..$45] with 8
-ResetJoybusTransactions:
+ResetJoybusTransactions: // 01:1A
 	lbx joybusChStatusEnd
 -;	lax {bit(joybusChStatus.doTransaction)}
 	excd 0
 	tr -
 	rtn
 
-CicWriteBit:
+CicWriteBit: // 01:20
+// save Bl in X, set Bl to CIC port
 	exax
 	lax cicPort
 	exbl
-	exax  // save old Bl in X
+	exax
 
-	out   // P5 <- A
+	out // P5 <- CIC_WRITE_x
 
-	lax 11 // short delay
+// short delay
+	lax 11
 -;	adx 1
 	tr -
-
 	tr CicEndIo
-	nop
 
-CicReadBit:
+	nop // filler (TRS vectors must be 2-byte aligned)
+
+CicReadBit: // 01:2A
+// save Bl in X, set Bl to CIC port
 	lax cicPort
 	exbl
-	exax  // save old Bl in X
+	exax
 
 	lax CIC_WRITE_1
-	out   // P5 <- 3
+	out // P5 <- 3
 
-	lax 11 // short delay
+// short delay
+	lax 11
 -;	adx 1
 	tr -
 
-// set carry to P5.3 (CIC reply)
+// set carry to CIC response bit
 	sc
 	tpb cicPort.response // test P5.3
 	rc
 
-CicEndIo:
+CicEndIo: // 01:35
 	lax CIC_WRITE_OFF
-	out   // P5 <- 1
+	out // P5 <- 1
 
 // another delay
 	lax 12
@@ -300,20 +310,21 @@ CicEndIo:
 	exbl
 	rtn
 
+////////////////////////////////////////
 // page 2 (interrupt vectors)
 origin $080
 
-// triggered by RCP SI
-InterruptA:
-	ex     // B = saveA
+// triggered by RCP
+InterruptA: // 02:00
+	ex // B = saveA
 	exci 0 // [saveA] <- A, Bl <- rcpPort
 	tr InterruptACont
 	nop
 
 // triggered by reset button
-InterruptB:
-	ex     // B = saveA
-	exc 0  // [saveA] <- A
+InterruptB: // 02:04
+	ex // B = saveA
+	exc 0 // [saveA] <- A
 
 // signal pending reset
 	lblx {low(pifStatus)} // Bl <- intRegister
@@ -321,15 +332,15 @@ InterruptB:
 
 // disable interrupt B
 	lax {bit(intRegister.A)}
-	out   // RE <- 1
+	out // RE <- 1
 
 // trigger pre-NMI IRQ on VR4300
 	lblx resetPort
 	lax {bit(resetPort.irq)}
-	out   // P8 <- 2
+	out // P8 <- 2
 	tr InterruptExit
 
-InterruptACont:
+InterruptACont: // 02:0E
 	tpb rcpPort.cmdType // test P7.3
 	tr RcpWrite
 	tpb rcpPort.cmdSize // test P7.2
@@ -347,13 +358,13 @@ InterruptACont:
 	tl SetChallengeBit
 
 // 64B or 4B write; halt until it's finished
-RcpWrite:
+RcpWrite: // 02:1D
 	call HaltCpu
 
 // if bit 0 of PIF command byte is set, prepare for future joybus transactions
 	lbx pifCommandLo
 	tm pifCommandLo.joybus
-	tr SkipJoybus
+	tr SkipPrepJoy
 
 	rm pifCommandLo.joybus
 	call SaveRegs
@@ -363,57 +374,62 @@ RcpWrite:
 	call PrepareJoybusTransactions
 
 // restore registers saved by joybus protocol
-JoybusExit:
+JoybusExit: // 02:2C
+// restore C
 	lbx saveC
 	sc
 	tm 0
 	rc
 
-	decb // restore X
+// restore X
+	decb
 	excd 0
 	exax
-	call ReadSplitByte // restore SB
+
+// restore SB
+	call ReadSplitByte
 	tr InterruptExit
 
-SkipJoybus:
+SkipPrepJoy: // 02:37
 	lbmx {high(saveA)}
 	tr InterruptExit
 
-// RCP is reading PIF-RAM, halt until it's finished
-RcpWaitForRead:
+// halt so RCP can read PIF-RAM
+RcpWaitForRead: // 02:39
 	call HaltCpu
 
-InterruptExit:
+InterruptExit: // 02:3B
 	lblx {low(saveA)}
 	exc 0
 	ex
 	rtni
 
+////////////////////////////////////////
 // page 3 (standby exit vector)
 origin $0C0
 
-StandbyExit:
+StandbyExit: // 03:00
 	nop
 
 // unless reset is pending, re-enable interrupts (is the check necessary?)
 	tm pifStatus.resetPending
 	rtn
 	lax {bit(intRegister.A)} | {bit(intRegister.B)}
-	out   // RE <- 5
+	out // RE <- 5
 	rtn
 
 // halting acknowledges command from RCP, allowing it to read/write PIF-RAM
-HaltCpu:
+HaltCpu: // 03:06
 	lblx {low(pifStatus)} // Bl <- 14
 	lax {bit(intRegister.A)}
-	out   // RE <- 1
+	out // RE <- 1
 	halt
 	tr StandbyExit
 
 
-CicLoopStart:
+CicLoopStart: // 03:0B
 	ie
-CicLoop:
+CicLoop: // 03:0C
 	lbx pifStatus
 
 // check if reset is pending
@@ -427,7 +443,7 @@ CicLoop:
 	rm pifStatus.doChallenge
 	tl CicChallenge
 
-CicCompare:
+CicCompare: // 03:16
 	lax CIC_WRITE_0
 	trs CicWriteBit
 	lax CIC_WRITE_0
@@ -447,7 +463,8 @@ CicCompare:
 	lax 0
 	adx 1
 	exbl
-L03_29:
+
+L03_29: // 03:29
 	lbmx 6
 	lax 3
 	tm 0
@@ -459,7 +476,8 @@ L03_29:
 	tr L03_37
 	tm 0
 	tr SignalError
-L03_34:
+
+L03_34: // 03:34
 if regionNTSC {
 	incb
 } else if regionPAL {
@@ -469,18 +487,19 @@ if regionNTSC {
 }
 	tr L03_29
 	tr CicLoop
-L03_37:
+L03_37: // 03:37
 	tm 0
 	tr L03_34
 
 // infinite loop, strobe reset port (NMI and pre-NMI IRQ)
-SignalError:
+SignalError: // 03:39
 	id
 	lblx resetPort
--;	out   // P8 <- A
+-;	out // P8 <- A
 	coma
 	tr -
 
+////////////////////////////////////////
 // page 4 (PAT data)
 origin $100
 
@@ -493,11 +512,12 @@ if regionNTSC {
 // swap internal and external memory
 // [$1b..$1f] <-> [$cb..$cf]
 // [$34..$3f] <-> [$e4..$ef]
-SwapMem:
+SwapMem: // 04:0E
 	lbx $cb
 	call SwapMemLoop
 	lbx $e4
-SwapMemLoop:
+
+SwapMemLoop: // 04:14
 	exc 0
 	exbm
 	adx 5
@@ -518,16 +538,16 @@ SwapMemLoop:
 
 // error occured when communicating with the joybus device.
 // set either bit 7 or 6 of the RX count byte in PIF-RAM
-JoybusError:
+JoybusError: // 04:23
 	lblx 2
 	lax 0
-	out   // P2 <- 0
+	out // P2 <- 0
 	lax 1
-	out   // P2 <- 1
+	out // P2 <- 1
 
 // read current channel's joybusDataPtr into SB
 	lblx joyChannelPort
-	in    // A <- PA (get current channel)
+	in // A <- PA (get current channel)
 	exbl
 	lbmx {high(joybusDataPtrHi)}
 	call ReadSplitByte
@@ -541,7 +561,7 @@ JoybusError:
 	tr JoybusWriteError
 +;	lax JOYBUS_ERR_TIMEOUT
 
-JoybusWriteError:
+JoybusWriteError: // 04:34
 	ex
 	incb
 	call IncrementPtr // go to RX byte
@@ -551,18 +571,19 @@ JoybusWriteError:
 
 //acknowledge error
 	lax 0
-	out   // P4 <- 0
+	out // P4 <- 0
 	tl JoybusNextChannel
 
+////////////////////////////////////////
 // page 5
 origin $140
 
 // Boot the system.
 // Lock the PIF-ROM, receive checksum from VR4300 (calculated in IPL2),
 // and compare it with checksum received from CIC.
-SystemBoot:
+SystemBoot: // 05:00
 	id
-	trs TRS_SwapMem  // return with B = $fe
+	trs TRS_SwapMem // return with B = $fe
 	trs ClearMemPage // clear PIF command byte
 	lblx {low(pifCommandHi)}
 	ie
@@ -575,12 +596,12 @@ SystemBoot:
 	id
 	lax {bit(romPort.lock)}
 	lblx romPort
-	out   // P6 <- 1
+	out // P6 <- 1
 
 // reset joybus
 	lblx 2
 	lax 1
-	out   // P2 <- 1
+	out // P2 <- 1
 	trs ResetJoybusTransactions
 
 // wait for VR4300's signal to read checksum from PIF-RAM
@@ -602,11 +623,11 @@ SystemBoot:
 	id
 	lax 0
 	exc 0 // clear pifCommandHi
-	tc    // call only on cold boot
+	tc // call only on cold boot
 	call L0E_00
 
 	lbx $34
-CompareChecksums:
+CompareChecksums: // 05:22
 	lax 0
 	exc 1
 	tam
@@ -620,7 +641,7 @@ CompareChecksums:
 	trs InitBootTimer
 	ie
 
-WaitTerminateBit:
+WaitTerminateBit: // 05:2D
 // must be set by VR4300 within 5 seconds after booting, else system locks up
 	lbx pifCommandLo
 	tm pifCommandLo.terminateBoot
@@ -633,16 +654,17 @@ WaitTerminateBit:
 
 	lbx pifStatus // Bl <- intRegister
 	lax {bit(intRegister.A)} | {bit(intRegister.B)}
-	out   // RE <- 5
+	out // RE <- 5
 	sm pifStatus.resetPending // clear pending reset flag
-	tb    // clear interrupt B flag
+	tb // clear interrupt B flag
 	nop
 	tl CicLoopStart
 
+////////////////////////////////////////
 // page 6
 origin $180
 
-ResetSystem:
+ResetSystem: // 06:00
 	lax CIC_WRITE_1
 	trs CicWriteBit
 	lax CIC_WRITE_1
@@ -650,13 +672,13 @@ ResetSystem:
 
 	lblx cicPort
 	lax CIC_WRITE_1
-	out   // P5 <- 3
+	out // P5 <- 3
 
 // clear reset timer
 	lbx resetTimer - 3
 	trs ClearMemPage // clear [$0c..$0f]
 
-ResetWaitCic:
+ResetWaitCic: // 06:0A
 	lbx pifCommandHi
 	sm pifCommandHi.readAck
 
@@ -676,9 +698,9 @@ ResetWaitCic:
 
 	lblx 5 // unused instruction
 
-BeginReset:
+BeginReset: // 06:18
 	lax CIC_WRITE_OFF
-	out   // P5 <- 1
+	out // P5 <- 1
 
 // wait for user to release reset button
 	lblx resetPort
@@ -690,14 +712,14 @@ BeginReset:
 
 // unlock PIF-ROM
 	lblx romPort
-	out   // P6 <- 0
+	out // P6 <- 0
 
 // pulse VR4300 NMI pin
 	lax {bit(resetPort.pressed)} | {bit(resetPort.nmi)}
 	lblx resetPort
-	out   // P8 <- 9
+	out // P8 <- 9
 	lax {bit(resetPort.pressed)}
-	out   // P8 <- 8
+	out // P8 <- 8
 
 	sc // set carry, this is a reset
 	tl Reboot
@@ -705,7 +727,7 @@ BeginReset:
 
 // increment byte at [B..B-1]
 // on overflow, decrement Bl to next byte and return skip
-IncrementByte:
+IncrementByte: // 06:29
 	exc 0
 	adx 1
 	tr IncNoOverflow
@@ -716,23 +738,23 @@ IncrementByte:
 	tr IncNoOverflowHi
 
 	excd 0
-	rtns   // overflow, return and skip
+	rtns // overflow, return and skip
 
-IncNoOverflow:
+IncNoOverflow: // 06:32
 	exc 0
 	rtn
 
-IncNoOverflowHi:
+IncNoOverflowHi: // 06:34
 	exci 0
 	rtn
 
-
+////////////////////////////////////////
 // page 7
 origin $1C0
 
 // increment 6-nibble boot timer at [$4f..$4a]
 // if all 6 nibbles overflow, freeze system
-IncrementBootTimer:
+IncrementBootTimer: // 07:00
 	lbmx {high(bootTimer)} // B = $4f
 	trs TRS_IncrementByte
 	tr +
@@ -744,7 +766,7 @@ IncrementBootTimer:
 
 // tell CicLoop to run challenge protocol
 // once finished, it will halt so RCP can read the result
-SetChallengeBit:
+SetChallengeBit: // 07:09
 	lbx pifCommandLo
 	rm pifCommandLo.challenge
 	lbx pifStatus
@@ -757,25 +779,25 @@ SetChallengeBit:
 	rtn
 
 // Use data written by PrepareJoybusTransactions to perform Joybus transactions.
-JoybusDoTransactions:
+JoybusDoTransactions: // 07:13
 	call SaveRegs
 	lblx joyChannelPort
-	lax 4   // number of channels - 1
+	lax 4 // number of channels - 1
 	tr JoybusCheckChannel
 
-JoybusEndChannel:
+JoybusEndChannel: // 07:18
 	lblx 2
 	lax 1
-	out   // P2 <- 1
+	out // P2 <- 1
 
-JoybusNextChannel:
+JoybusNextChannel: // 07:1B
 	lblx joyChannelPort
-	in        // A <- PA (read back selected channel)
-	adx 15    // decrement, go to next channel
+	in // A <- PA (read back selected channel)
+	adx 15 // decrement, go to next channel
 	tr JoybusEndTransactions // on underflow, end protocol
 
-JoybusCheckChannel:
-	out   // PA <- A (select channel)
+JoybusCheckChannel: // 07:1F
+	out // PA <- A (select channel)
 	exbl
 	lbmx {high(joybusChStatus)} // B = joybusChStatus[Bl]
 
@@ -792,7 +814,7 @@ JoybusCheckChannel:
 
 	tr JoybusNextChannel
 
-JoybusChannelTransaction:
+JoybusChannelTransaction: // 07:2A
 	lbmx {high(joybusDataPtrHi)}
 	call ReadSplitByte // copy channel's PIF-RAM pointer to SB
 
@@ -809,22 +831,23 @@ JoybusChannelTransaction:
 	tl JoybusDecTxCount
 
 // halt so RCP can read transaction results from PIF-RAM
-JoybusEndTransactions:
+JoybusEndTransactions: // 07:38
 	lbmx {high(pifStatus)}
 	call HaltCpu
 	tl JoybusExit
 
+////////////////////////////////////////
 // page 8
 origin $200
 
-JoybusDecTxCountHi:
+JoybusDecTxCountHi: // 08:00
 	excd 0
 	exc 0
 	adx 15
 	tr JoybusEndTx // if high nibble underflows (txCount was 0), end TX
 	exci 0
 
-JoybusTxWait:
+JoybusTxWait: // 08:05
 	tpb joyStatusPort.error // test P3.2
 	tl JoybusError
 	tpb joyStatusPort.busy // test P3.3
@@ -834,25 +857,25 @@ JoybusTxWait:
 	ex
 	lda 0
 	incb
-	outl  // P0 <- A
+	outl // P0 <- A
 
 // transmit low nibble
 	lda 0
-	outl  // P0 <- A
+	outl // P0 <- A
 	incb
 
-// check for RAM ptr overflow
+// if low nibble of RAM ptr overflows, increment high nibble
 	tr TxNoOver
 	exbm
 	adx 1 // increment hi
 	tr +
 	lax 8 // wrap from $FF to $80
 +;	exbm
-TxNoOver:
+TxNoOver: // 08:17
 	ex
 
 // decrement txCount, are there more bytes left to send?
-JoybusDecTxCount:
+JoybusDecTxCount: // 08:18
 	exc 0
 	adx 15
 	tr JoybusDecTxCountHi
@@ -860,45 +883,45 @@ JoybusDecTxCount:
 	tr JoybusTxWait
 
 // prepare for RX
-JoybusEndTx:
+JoybusEndTx: // 08:1D
 	call JoybusConsoleStop
 	lbx rxCountLo
 	tr JoybusDecRxCount
 
 
-JoybusDecRxCountHi:
+JoybusDecRxCountHi: // 08:22
 	excd 0
 	exc 0
 	adx 15
 	tl JoybusEndChannel // if high nibble underflows (rxCount was 0), end transaction
 	exci 0
 
-JoybusRxWait:
+JoybusRxWait: // 08:28
 	tpb joyStatusPort.error // test P3.2
 	tl JoybusError
 	tpb joyStatusPort.busy // test P3.3
 	tr JoybusRxWait
 
 // receive high nibble to PIF-RAM [SB]
-	inl   // A <- P1
+	inl // A <- P1
 	ex
 	exci 0
 
 // receive low nibble
-	inl   // A <- P1
+	inl // A <- P1
 	exci 0
 	tr RxNoOver
 
 // low nibble of RAM ptr overflowed, increment high nibble and wrap from $F to $8
 	exbm
 	lbmx 8
-	adx 1  // if Bm overflows, wrap to $8, else increment Bm
+	adx 1 // if Bm overflows, wrap to $8, else increment Bm
 	exbm
-RxNoOver:
+RxNoOver: // 08:37
 	ex
 
 // decrement rxCount, more bytes left to receive?
-JoybusDecRxCount:
+JoybusDecRxCount: // 08:38
 	exc 0
 	adx 15
 	tr JoybusDecRxCountHi
@@ -906,16 +929,16 @@ JoybusDecRxCount:
 	tr JoybusRxWait
 
 // unused infinite loop???
-L08_3D:
+-;	nop
 	nop
-	nop
-	tr L08_3D
+	tr -
 
+////////////////////////////////////////
 // page 9
 origin $240
 
 // send console stop bit to joybus device
-JoybusConsoleStop:
+JoybusConsoleStop: // 09:00
 	lbx pifCommandLo
 	tm pifCommandLo.unknown
 	tr SendConsoleStop
@@ -926,17 +949,17 @@ JoybusConsoleStop:
 	trs TRS_LongDelay // and add a long delay
 	rtn
 
-SendConsoleStop:
+SendConsoleStop: // 09:09
 	lblx 2
 	lax 2
-	out   // P2 <- 2
+	out // P2 <- 2
 	rtn
 
 // loop until XA overflows
-LongDelay:
+LongDelay: // 09:0D
 	lax 0
 	atx
-LongDelayLoop:
+LongDelayLoop: // 09:0F
 	exax
 -;	adx 1
 	tr -
@@ -946,7 +969,7 @@ LongDelayLoop:
 	rtn
 
 // copy TX count [SB..SB+1] to TX temp [$22..$23]
-JoybusCopyTxCount:
+JoybusCopyTxCount: // 09:16
 	ex
 	tm 3 // skip channel if bit 7 of TX is set
 	tr +
@@ -958,13 +981,13 @@ JoybusCopyTxCount:
 	rtns
 
 // copy RX count [SB..SB+1] to RX temp [$32..$33]
-JoybusCopyRxCount:
+JoybusCopyRxCount: // 09:1F
 	ex
 	rm 3 // reset error bits in RX count
 	rm 2
 
-JoybusCopyByte:
 // copy byte from PIF-RAM to temp, increment SB (PIF-RAM ptr) to next byte
+JoybusCopyByte: // 09:22
 	lda 0
 	ex
 	exci 0 // temp hi <- PIF-RAM hi
@@ -980,11 +1003,11 @@ JoybusCopyByte:
 // This routine prepares all six channels for a Joybus transaction.
 // joybusDataPtr[0..5]  = pointer to joybus transaction data in PIF-RAM
 // joybusChStatus[0..5] = mark channel as ready for transfer, or reset it
-PrepareJoybusTransactions:
+PrepareJoybusTransactions: // 09:2D
 	lbx $80
-PrepJoyLoop:
+PrepJoyLoop: // 09:2F
 	lax 15
-	tam   // are bits 7-4 of TX count = $f?
+	tam // are bits 7-4 of TX count = $f?
 	tl PrepJoyCommand // if not, run normal joybus command
 
 	incb
@@ -997,74 +1020,75 @@ PrepJoyLoop:
 	tr PrepJoyLoop
 	exbm
 	adx 1
-	tl L0A_00
-	rtn   // end protocol if B overflows (end of PIF-RAM)
+	tl + // fall through to next page
+	rtn // end protocol if B overflows (end of PIF-RAM)
 
+////////////////////////////////////////
 // page A
 origin $280
 
-L0A_00:
-	exbm
++;	exbm
 	tl PrepJoyLoop
 
-PrepJoySpecialCommand:
+PrepJoySpecialCommand: // 0A:03
 	adx 1
 	tr +
-	rtn   // end protocol if TX = $fe
+	rtn // end protocol if TX = $fe
 
 +;	adx 1
-	tr PrepJoyHandleTxDecb // if not $fd, handle as normal command
+	tr PrepJoySetDataPtrDecb // if not $fd, handle as normal command
 
-// TX = $fd, mark joybus channel for reset
+// TX = $fd, mark joybus channel for reset and skip this channel
 	ex
 	lbmx {high(joybusChStatus)}
 	sm joybusChStatus.reset
 	lbmx {high(joybusDataPtrHi)}
 	ex
-	tr L0A_14
+	tr PrepJoySkip
 
-PrepJoyCommand:
+PrepJoyCommand: // 0A:0E
 // check if TX = $00
 	lax 0
 	tam
-	tr PrepJoyHandleTx
+	tr PrepJoySetDataPtr
 	incb
 	tam
-	tr PrepJoyHandleTxDecb
+	tr PrepJoySetDataPtrDecb
 
 // TX = $00, skip this channel
-L0A_14:
+
+PrepJoySkip: // 0A:14
 // increment PIF-RAM pointer
 	incb
-	tr L0A_1B
+	tr SkipNoOver
 	exbm
-	adx 1
+	adx 1 // increment hi
 	tr +
-	rtn   // end protocol if B overflows (end of PIF-RAM)
+	rtn // end protocol if B overflows (end of PIF-RAM)
 +;	exbm
-L0A_1B:
+SkipNoOver: // 0A:1B
 	ex
-	incb  // skip channel
+	incb // skip channel
 	tl PrepJoyNextCmd
 
-PrepJoyHandleTxDecb:
-	decb
-PrepJoyHandleTx:
 // B = PIF-RAM pointer
 // SB = joybusDataHi
+PrepJoySetDataPtrDecb: // 0A:1F
+	decb
+PrepJoySetDataPtr: // 0A:20
 // write high nibble of transaction data addr to joybusDataPtrHi
 	exbm
-	atx    // X <- Bm
+	atx // X <- Bm
 	exbm
 	exax
 	ex
-	exc 1  // joybusDataPtrHi[SBl] <- X (Bm)
+	exc 1 // joybusDataPtrHi[SBl] <- X (Bm)
 	ex
 
 // SB = joybusDataLo
 // write low nibble of transaction data addr to joybusDataPtrHi
 	exbl
-	atx    // X <- Bl
+	atx // X <- Bl
 	exbl
 	exax
 	ex
@@ -1074,6 +1098,7 @@ PrepJoyHandleTx:
 // joybusDataLo/Hi now contains pointer to data for this channel's transaction
 
 // copy TX count bits 7-4 to X, mask upper 2 bits of X
+PrepJoyHandleTx:
 	lda 0
 	rm 2
 	rm 3
@@ -1092,6 +1117,7 @@ PrepJoyHandleTx:
 	exax
 	tl + // fall through to next page
 
+////////////////////////////////////////
 // page B
 origin $2C0
 
@@ -1113,9 +1139,9 @@ origin $2C0
 	tr PrepJoyHandleRxExbm
 	tr PrepJoyCancelEx // end protocol if B overflows (end of PIF-RAM)
 
-PrepJoyHandleRxExbm:
+PrepJoyHandleRxExbm: // 0B:0A
 	exbm
-PrepJoyHandleRx:
+PrepJoyHandleRx: // 0B:0B
 // copy RX count bits 7-4 to X, mask upper 2 bits of X
 	lda 0
 	rm 3
@@ -1131,7 +1157,7 @@ PrepJoyHandleRx:
 	lbmx {low(joybusDataPtrLo)}
 	adc
 	nop
-	exc 1  // write transaction byte count lo
+	exc 1 // write transaction byte count lo
 
 // B = joybusDataPtrHi
 // add RX count hi to transaction byte count hi
@@ -1158,8 +1184,8 @@ PrepJoyHandleRx:
 	exbl // A <- low nibble of curr PIF-RAM address
 	ex
 
-	sc   // add 1
-	adc  // add transaction nibble count lo
+	sc // add 1
+	adc // add transaction nibble count lo
 	nop
 	lbmx {high(joybusDataPtrHi)}
 
@@ -1168,7 +1194,7 @@ PrepJoyHandleRx:
 	exbm // A <- high nibble of curr PIF-RAM address
 	ex
 
-	adc  // add transaction nibble count hi + carry
+	adc // add transaction nibble count hi + carry
 	tr +
 	tr PrepJoyCancel // if address overflows, cancel this channel's transaction and end protocol
 +;	ex
@@ -1178,29 +1204,30 @@ PrepJoyHandleRx:
 // B now contains address of next command in PIF-RAM
 // finally, go to next channel
 
-PrepJoyNextCmd:
+PrepJoyNextCmd: // 0B:33
 	lax 5
 	tabl
 	tr +
-	rtn   // if Bl = 5, last channel was just processed. end protocol
+	rtn // if Bl = 5, last channel was just processed. end protocol
 +;	ex
 	tl PrepJoyLoop // else, process next channel
 
-PrepJoyCancelEx:
+PrepJoyCancelEx: // 0B:3A
 	ex
-PrepJoyCancel:
+PrepJoyCancel: // 0B:3B
 	decb
 	lbmx {high(joybusChStatus)}
-	rm joybusChStatus.reset         // do not reset this channel
+	rm joybusChStatus.reset // do not reset this channel
 	sm joybusChStatus.doTransaction // cancel transaction
 	rtn
 
+////////////////////////////////////////
 // page C
 origin $300
 
 // read nibble from CIC into [B]
-// increments Bl, returns with skip on carry
-CicReadNibble:
+// increments Bl, returns with skip on overflow
+CicReadNibble: // 0C:00
 	lax 15
 	exc 0
 
@@ -1224,8 +1251,8 @@ CicReadNibble:
 	tr CicNibbleEnd
 
 // write nibble at [B] to CIC
-// increments Bl, returns with skip on carry
-CicWriteNibble:
+// increments Bl, returns with skip on overflow
+CicWriteNibble: // 0C:10
 	lax CIC_WRITE_1
 	tm 3
 	lax CIC_WRITE_0
@@ -1246,29 +1273,29 @@ CicWriteNibble:
 	lax CIC_WRITE_0
 	trs CicWriteBit
 
-CicNibbleEnd:
+CicNibbleEnd: // 0C:20
 	incb
 	rtn
 	rtns
 
 
-JoybusResetLoop:
+JoybusResetLoop: // 0C:23
 // acknowledge error
 	lblx joyErrorPort
 	lax 0
-	out   // P4 <- 0
+	out // P4 <- 0
 
 // reset joybus channel selected by PA
-JoybusResetChannel:
+JoybusResetChannel: // 0C:26
 	lblx joyStatusPort
 	tpb joyStatusPort.busy // test P3.3
 	tr JoybusResetLoop
 
 	lblx 2
 	lax 3
-	out   // P2 <- 3
+	out // P2 <- 3
 	lax 1
-	out   // P2 <- 1
+	out // P2 <- 1
 
 	lblx joyStatusPort
 -;	tpb joyStatusPort.busy // test P3.3
@@ -1277,7 +1304,7 @@ JoybusResetChannel:
 
 
 // copy split byte at [B..B^16] to SB
-ReadSplitByte:
+ReadSplitByte: // 0C:32
 	lda 1
 	ex
 	exbm // SBm <- [B]
@@ -1289,10 +1316,11 @@ ReadSplitByte:
 	ex
 	rtn
 
+////////////////////////////////////////
 // page D
 origin $340
 
-CicChallenge:
+CicChallenge: // 0D:00
 	lax CIC_WRITE_1
 	trs CicWriteBit
 	lax CIC_WRITE_0
@@ -1319,10 +1347,10 @@ CicChallenge:
 	tl CicLoopStart // re-enable interrupts
 
 
-L0D_1B:
+L0D_1B: // 0D:1B
 	ex
 	lbx $e0
-L0D_1E:
+L0D_1E: // 0D:1E
 	ex
 	lda 0
 	adx 15
@@ -1338,23 +1366,23 @@ L0D_1E:
 	tr L0D_1E
 	tr L0D_2F
 
-L0D_2B:
+L0D_2B: // 0D:2B
 	ex
 	trs TRS_CicReadNibble
 	trs TRS_CicReadNibble
 	tr L0D_1E
-L0D_2F:
+L0D_2F: // 0D:2F
 	lbmx 15
 	tr L0D_1E
 
 // set SB = $56, for handling interrupts
-SetSB:
+SetSB: // 0D:31
 	lbx saveA
 	ex
 	rtn
 
 // increment B and wrap to $80 on overflow
-IncrementPtr:
+IncrementPtr: // 0D:35
 	incb
 	rtn
 
@@ -1365,21 +1393,22 @@ IncrementPtr:
 +;	exbm
 	rtn
 
+////////////////////////////////////////
 // page E
 origin $380
 
-L0E_00:
+L0E_00: // 0E:00
 	lbx osInfo
 	sm 1
 	call L0F_1B
 	lblx cicPort
 	lax CIC_WRITE_1
-	out   // P5 <- 3
+	out // P5 <- 3
 	trs TRS_LongDelay
 	lax CIC_WRITE_OFF
-	out   // P5 <- 1
+	out // P5 <- 1
 	lbx $20
-L0E_0D:
+L0E_0D: // 0E:0D
 	trs TRS_CicReadNibble
 	tr L0E_0D
 
@@ -1391,8 +1420,8 @@ L0E_0D:
 	tl L0F_00
 
 // decode CIC seed or checksum (one round)
-// loop until end of memory segment
-CicDecodeSeed:
+// loop until end of memory page
+CicDecodeSeed: // 0E:15
 	lax 15
 -;	coma
 	add
@@ -1400,10 +1429,10 @@ CicDecodeSeed:
 	tr -
 	rtn
 
-L0E_1B:
+L0E_1B: // 0E:1B
 	lblx 15
 	lda 0
-L0E_1D:
+L0E_1D: // 0E:1D
 	atx
 	sc
 	lblx 1
@@ -1428,7 +1457,7 @@ L0E_1D:
 	add
 	exci 0
 
-L0E_34:
+L0E_34: // 0E:34
 	adx 1
 	nop
 	add
@@ -1442,16 +1471,17 @@ L0E_34:
 	rtn
 	tr L0E_1D
 
+////////////////////////////////////////
 // page F
 origin $3C0
 
-L0F_00:
+L0F_00: // 0F:00
 	lbx $60
 	lax 0
 	exc 0
 	ex
 	lbx $62
-L0F_07:
+L0F_07: // 0F:07
 	ex
 	lax 4
 	atx
@@ -1471,12 +1501,12 @@ L0F_07:
 	trs TRS_CicWriteNibble
 	tl SetSB // SB = saveA
 
-L0F_1B:
+L0F_1B: // 0F:1B
 	lbx $69 // Bl <- rngPort
 	lax 1
-	out   // P9 <- 1
+	out // P9 <- 1
 
-L0F_1F:
+L0F_1F: // 0F:1F
 	call IncrementByte
 	nop
 	lblx rngPort
@@ -1484,7 +1514,7 @@ L0F_1F:
 	tr L0F_1F
 
 	lax 0
-	out   // P9 <- 0
+	out // P9 <- 0
 	excd 0
 	exax
 	exc 0
@@ -1495,7 +1525,7 @@ L0F_1F:
 	rtn
 
 // save SB, X and C
-SaveRegs:
+SaveRegs: // 0F:2F
 	lbx saveBm
 
 // [saveBm] <- Bm
