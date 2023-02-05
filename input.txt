@@ -1,5 +1,6 @@
 # Simulate NTSC region PIF
 0
+
 # P5 handshake - NTSC region
 0 0 0 8
 # P5 seed - CIC 6102
@@ -11,12 +12,24 @@
 8 8 0 8
 
 # ROM lockout
-0x10
-# Checksum verification
-0x20
-# Clear PIF RAM
-0x40
-# P9 ?
+w4 3c 0 0 0 0 0 0 1 0
+# P7 RCP write
+0
+pass
+
+# Get checksum
+w4 3c 0 0 0 0 0 0 2 0
+# P7 RCP write
+0
+pass
+
+# Check checksum
+w4 3c 0 0 0 0 0 0 4 0
+# P7 RCP write
+0
+pass
+
+# P9 (RNG seed?)
 8
 # P5 checksum - all zero (encoded)
 0 0 0 0
@@ -35,29 +48,84 @@
 8 0 8 8
 0 0 8 8
 0 0 8 8
+
 # Terminate boot process
-0x08
+w4 3c 0 0 0 0 0 0 0 8
+# P7 RCP write
+0
+pass
 
-# P7
-#8 0
-
-# P7
-8 4
 # CIC challenge
-0x02
+w4 3c 0 0 0 0 0 0 0 2
+# P7 RCP write
+0
+r64
+# P7 RCP read 64B
+8 4
+pass
+
+# CIC challenge continued (post-interrupt)
 # P5
 8 0 8 0
 8 0 8 0
 0
 
-# P7
-#0
 # Joybus command
-#0x01
+w64
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1
+# P7 RCP write
+0
+r64
+# P7 RCP read 64B
+8 4
+# P8
+4 3 2 1 0
+pass
 
-# P7
-#8 4
-# command
-#0x00
-# A
-#7
+# Compare mode
+0 0 0 0
+pass
+0 8 0 8 0 0 0
+pass
+8 8 0 0 0 0 8 0 0 8 0 8 8 0
+pass
+0 8 8 0 0 8 0 8 0 0 8
+pass
+8 8 8 8 8 8 0
+pass
+0 8 8 0 0
+pass
+0 8 8 8
+pass
+0 8 0 0
+pass
+8 0 0 0 0 8 0 8 8 8
+pass
+0 8 0
+pass
+0 8 0 8 0 0 8 0
+pass
+0 8 8 0 0 8 0 0 0 8 8 0
+pass
+0 8 8 0 0 0 8 0
+pass
+8 0 8 0 0 0 8 0 0 8 8
+pass
+8 8
+pass
+0 8 0 8 0 0 0 8
+
+# Reset
+reset
+pass
+
+# Reset continued (post-interrupt)
+# P5
+0
+# P8
+8
+
+exit
