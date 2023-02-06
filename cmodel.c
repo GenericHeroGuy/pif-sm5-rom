@@ -43,6 +43,10 @@ enum {
 
   ROM_LOCKOUT = BIT(0),
 
+  CIC_DATA_W = BIT(0),
+  CIC_CLOCK = BIT(1),
+  CIC_DATA_R = BIT(3),
+
   RCP_XFER_READ = BIT(3),
   RCP_XFER_64B = BIT(2),
 
@@ -168,7 +172,7 @@ void cicChallengeTransfer(u8 address);
 void regInitSB(void);
 u8 incrementPtr(u8 address);
 void cicCompareInit(void);
-void cicDecode(u8 address);
+void cicDescramble(u8 address);
 void cicCompareRound(u8 address);
 void cicCompareExpandSeed(void);
 void cicCompareCreateSeed(void);
@@ -176,7 +180,7 @@ void regSave(void);
 
 // 00:00
 void start(void) {
-  writeIO(PORT_CIC, 1);
+  writeIO(PORT_CIC, CIC_DATA_W);
   writeIO(REG_INT_EN, INT_A_EN);
 
   regInitSB();
@@ -200,8 +204,8 @@ void start(void) {
   for (u8 address = CIC_SEED_BUF; address < CIC_SEED_END; ++address)
     cicReadNibble(address);
 
-  cicDecode(CIC_SEED_BUF);
-  cicDecode(CIC_SEED_BUF);
+  cicDescramble(CIC_SEED_BUF);
+  cicDescramble(CIC_SEED_BUF);
 
   u8 a = RAM(STATUS);
   RAM_BIT_RESET(STATUS, STATUS_CHALLENGE);
@@ -241,19 +245,19 @@ void joybusStatusInit(void) {
 
 // 01:20
 void cicWriteBit(bool value) {
-  writeIO(PORT_CIC, value | 2);
+  writeIO(PORT_CIC, (value ? CIC_DATA_W : 0) | CIC_CLOCK);
   SPIN(5);
-  writeIO(PORT_CIC, 1);
+  writeIO(PORT_CIC, CIC_DATA_W);
   SPIN(4);
 }
 
 // 01:2A
 // read bit from CIC
 bool cicReadBit(void) {
-  writeIO(PORT_CIC, 3);
+  writeIO(PORT_CIC, CIC_DATA_W | CIC_CLOCK);
   SPIN(5);
-  bool c = readIO(PORT_CIC) & BIT(3);
-  writeIO(PORT_CIC, 1);
+  bool c = readIO(PORT_CIC) & CIC_DATA_R;
+  writeIO(PORT_CIC, CIC_DATA_W);
   SPIN(4);
   return c;
 }
@@ -511,9 +515,9 @@ void boot(void) {
   //     leave it to game code. Maybe it's just a security by obscurity measure, so that the code
   //     setting the bit is "hidden" somewhere in game code, making harder to find
   //     out about it.
-  // [2] Skipping RDRAM initialization on warm boots is a design decision to allow game code
-  //     to store data in RDRAM that will be preserved across reset (see osAppNMIBuffer in
-  //     libultra).
+  // [2] Skipping RDRAM initialization on warm boots is a design decision to allow for faster
+  //     boots and for game code to store data in RDRAM that will be preserved across reset
+  //     (see osAppNMIBuffer in libultra).
   bootTimerInit(BOOT_TIMER);
 
   IME = 1;
@@ -540,12 +544,12 @@ void boot(void) {
 void cicReset(void) {
   cicWriteBit(1);
   cicWriteBit(1);
-  writeIO(PORT_CIC, 3);
+  writeIO(PORT_CIC, CIC_DATA_W | CIC_CLOCK);
   memZero(RESET_TIMER);
 
   for (;;) {
     RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_ACK);
-    if (!(readIO(PORT_CIC) & BIT(3)))
+    if (!(readIO(PORT_CIC) & CIC_DATA_R))
       break;
 
     u8 b = RESET_TIMER_END - 1;
@@ -553,7 +557,7 @@ void cicReset(void) {
       signalError();
   }
 
-  writeIO(PORT_CIC, 1);
+  writeIO(PORT_CIC, CIC_DATA_W);
 
   while (!(readIO(PORT_RESET) & RESET_BUTTON)) // keep the reset on hold until the button is kept pressed
     ;
@@ -926,28 +930,39 @@ u8 incrementPtr(u8 address) {
 
 // 0E:00
 void cicCompareInit(void) {
+  // Set the RESET flag in OSINFO in internal memory. In fact, the previous value
+  // have been already copied to external memory and read by the CPU. If the conole
+  // is reset in the future, this value will be copied to external memory, including
+  // the RESET bit.
   RAM_BIT_SET(OSINFO, OSINFO_RESET);
 
   cicCompareCreateSeed();
 
-  writeIO(PORT_CIC, 3);
+  // Pulse the clock to begin CIC compare transfer. This pulse has also the effect
+  // of providing some entropy to CIC. In fact, the previous function cicCompareCreateSeed()
+  // used a hardware time-based RNG, so it takes a random amount of time to complete.
+  // Meanwhile, the CIC is running a psuedo-RNG waiting for the clock pulse. Since
+  // the exact time of the pulse depends on the hardware RNG in PIF, the CIC will stop
+  // its psuedo-RNG at a random time.
+  // The CIC uses that RNG to create the scramble key put at the start of CIC_CHECKSUM_BUF.
+  writeIO(PORT_CIC, CIC_DATA_W | CIC_CLOCK);
   spin256();
-  writeIO(PORT_CIC, 1);
+  writeIO(PORT_CIC, CIC_DATA_W);
 
   for (u8 address = CIC_CHECKSUM_BUF; address < CIC_CHECKSUM_END; ++address)
     cicReadNibble(address);
 
-  cicDecode(CIC_CHECKSUM_BUF);
-  cicDecode(CIC_CHECKSUM_BUF);
-  cicDecode(CIC_CHECKSUM_BUF);
-  cicDecode(CIC_CHECKSUM_BUF);
+  cicDescramble(CIC_CHECKSUM_BUF);
+  cicDescramble(CIC_CHECKSUM_BUF);
+  cicDescramble(CIC_CHECKSUM_BUF);
+  cicDescramble(CIC_CHECKSUM_BUF);
 
   cicCompareExpandSeed();
 }
 
 // 0E:15
 // decode CIC seed or checksum (one round)
-void cicDecode(u8 address) {
+void cicDescramble(u8 address) {
   u8 a = 0xf;
   do {
     u8 b = RAM(address);
