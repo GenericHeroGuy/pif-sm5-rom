@@ -141,7 +141,7 @@ void interruptA(void);
 void interruptB(void);
 void regRestore(void);
 void interruptEpilog(void);
-void halt(void);
+void executeRCPTransfer(void);
 void cicLoop(void);
 void cicCompare(void);
 void signalError(void);
@@ -152,7 +152,7 @@ void boot(void);
 void cicReset(void);
 bool increment8(u8* address);
 void bootTimer(void);
-void interruptEpilogID(void);
+void interruptEpilogChallenge(void);
 void joybusTransfer(void);
 void joybusTransferChannel(u8 n);
 void joybusWait(void);
@@ -263,7 +263,14 @@ bool cicReadBit(void) {
 }
 
 // 02:00
-// triggered by DMA 64B 
+// Triggered by all RCP accesses (Read4B / Read64B / Write4B / Write64B)
+// The interrupt is actually triggered twice: one at the beginning which just
+// signals the request from RCP; then the PIF must call executeRCPTransfer that will
+// actually begin the transfer, and the interrupt will then trigger a second
+// time at the end of the transfer.
+// The way the firmware is designed, though, means this interrupt handler is only
+// called on the first trigger, as the second one will happen while interrupts are
+// disabled.
 void interruptA(void) {
   SB = B;
   RAM(SAVE_A) = A;
@@ -275,22 +282,31 @@ void interruptA(void) {
       // otherwise execute the joybus transfer that was last programmed.
       readCommand();
       if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_CHALLENGE)) {
-        joybusTransfer();
+        joybusTransfer();  // this will also call executeRCPTransfer() when it's done
         return;
       }
 
       if (RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {
-        interruptEpilogID();
-        return;
+        // We need to do the 6105 challenge with the CIC. We can't do it right away
+        // because the main loop might be doing a cicCompare() right now, so we just
+        // set the challenge bit and let the main loop do it when it's ready.
+        // NOTE: interruptEpilogChallenge() actually does a "RTN" rather than "RTNI",
+        // so it leaves interrupts disabled. We don't want other interrupts to happen
+        // while we are waiting for the challenge to be run.
+        interruptEpilogChallenge();
+        return;  
       }
     }
 
-    halt();
+    // Let the transfer run with the current PIF-RAM contents. This happens for all
+    // Read4B transfers (aka CPU reads), and Read64B transfers
+    executeRCPTransfer();
   } else {
-    halt();
+    // A write was issued by RCP (either Write4B or Write64B). In this case, let the
+    // transfer run right away and then process the updated contents of PIF-RAM.
+    executeRCPTransfer();
 
-    // This is either a 4B or a 64B write. Either case, as soon as we see the
-    // joybus command bit (0x1), turn it off and parse the joybus packet
+    // If the joybus command bit (0x1) is set, turn it off and parse the joybus packet
     // into internal memory (see JOYBUS_*).
     readCommand();
     if (RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_JOYBUS)) {
@@ -337,12 +353,21 @@ void interruptEpilog(void) {
 }
 
 // 03:06
-// wait for interrupt A
-void halt(void) {
-  writeIO(REG_INT_EN, INT_A_EN);   // enable A and disable B
+// This function is meant to be called during interruptA. When the intA first triggers,
+// the transfer from RCP is paused waiting for an ACK from PIF. This function gives
+// the ACK (send the "start bit"), and then wait for the actual transfer to finish. 
+void executeRCPTransfer(void) {
+  // Re-enable intA. This is *probably* the trigger for the hardware unit in charge of
+  // RCP communication to send the ACK bit (aka "start bit") which makes the RCP transfer
+  // actually begin. We don't know for sure, but it's the most probable explanation, as
+  // this function really does nothing else.
+  writeIO(REG_INT_EN, INT_A_EN);
 
-  // todo: should we do anything for halt/standby?
-  // HALT = 1;
+  // Now that the RCP transfer is in progress, wait for intA to trigger again, which
+  // signals that it is finished. Notice that IME=0 here, so the core does not jump
+  // to the interrupt vector (interruptA()), but it will just exit from halt status
+  // and continue execution.
+  halt();
 
   if (RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {
     writeIO(REG_INT_EN, INT_A_EN | INT_B_EN);   // reenable B (unless we're already resetting)
@@ -352,7 +377,7 @@ void halt(void) {
 // 03:0B
 void cicLoop(void) {
   for (;;) {
-    IME = 1;
+    IME = 1;   // reenable interrupts (in case they were disabled, like during the challenge)
     static bool checkOnce;  // todo: remove, for testing purposes
     if (!checkOnce) {
       checkOnce = true;
@@ -365,7 +390,7 @@ void cicLoop(void) {
         cicReset();
         return;
       }
-      if (RAM_BIT_TEST(STATUS, STATUS_CHALLENGE)) {
+      if (RAM_BIT_TEST(STATUS, STATUS_CHALLENGE)) { // if the challenge bit is set, run the challenge
         RAM_BIT_RESET(STATUS, STATUS_CHALLENGE);
         cicChallenge();
         break;
@@ -598,25 +623,32 @@ void bootTimerCheck(void) {
 }
 
 // 07:09
-// leaves interrupts disabled
-void interruptEpilogID(void) {
-  RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_CHALLENGE);
-  RAM_BIT_SET(STATUS, STATUS_CHALLENGE);
+// Epilog of the interrupt for the challenge command.
+void interruptEpilogChallenge(void) {
+  RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_CHALLENGE);  // turn off challenge bit in command byte
+  RAM_BIT_SET(STATUS, STATUS_CHALLENGE);  // tell the main loop that will need to do the challenge
   A = RAM(SAVE_A);
   B = SB;
+  // NOTE: this is a RTN rather than a RTNI, so this function exits the interrupt vector
+  // but leaves interrupts disabled.
+  return;
 }
 
 // 07:13
 void joybusTransfer(void) {
   regSave();
 
+  // Go through the 5 channels in reverse order, and do the actual
+  // joybus protocol transfer.
   u8 n = 4;
   do {
     joybusTransferChannel(n);
     n = readIO(PORT_JOYBUS_CHANNEL);
   } while (n--);
 
-  halt();
+  // Now that PIF-RAM has been updated with contents reads from joybus devices,
+  // execute the RCP transfer, so that the data is sent to the CPU via RCP.
+  executeRCPTransfer();
 
   regRestore();
 }
@@ -897,15 +929,21 @@ void cicChallenge(void) {
   cicReadBit();  // return value discarded
   cicChallengeTransfer(CIC_CHALLENGE_COUNT_IN);
 
-  halt();
+  // Now that the challenge is complete and the data is in PIF-RAM, runs the RCP transfer
+  // that was left suspended since interruptA() triggered. This will actually transfer the
+  // data to the CPU via RCP.
+  executeRCPTransfer();
   regInitSB();
 }
 
 // 0D:1B
-void cicChallengeTransfer(u8 address) {
-  for (u8 b = CIC_CHALLENGE_LO; RAM(address) != 0; b += 2) {
-    RAM(address) -= 1;
-    if (address != CIC_CHALLENGE_COUNT_OUT) {
+void cicChallengeTransfer(u8 counter_ptr) {
+  // Do the transfer. The counter is decremented by 1 for each byte transferred,
+  // so assuming it starts from 0, it runs the loop 15 times (=> 30 nibbles, 15 bytes)
+  // and leaves it at 0 again for next transfer.
+  for (u8 b = CIC_CHALLENGE_LO; RAM(counter_ptr) != 0; b += 2) {
+    RAM(counter_ptr) -= 1;
+    if (counter_ptr != CIC_CHALLENGE_COUNT_OUT) {
       cicReadNibble(b + 0);
       cicReadNibble(b + 1);
     } else {
@@ -1063,6 +1101,10 @@ void checkInterrupt(void) {
     IME = 0;
     interruptA();
   }
+}
+
+void halt(void) {
+  // todo: maybe simulate actual DMA transfer and second intA?
 }
 
 int scanValue(void) {
