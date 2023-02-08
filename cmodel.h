@@ -45,7 +45,7 @@ r4 ram[256];
 #define IFB r.ifb
 #define RE r.re.l
 
-#define RAM(i) ram[(i)].l
+#define RAM(i) ram[(i)&0xff].l
 
 #define BIT(i) (1 << (i))
 
@@ -64,6 +64,6 @@ r4 ram[256];
 
 u8 readIO(u8 port);
 void writeIO(u8 port, u8 value);
-void readCommand(void);
+void sync(void);
 void fatalError(void);
 void notImpl(u8 pu, u8 pl);
