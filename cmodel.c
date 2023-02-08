@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 // C model reference implementation of SM5 PIF ROM
 // Goals:
@@ -12,10 +13,6 @@
 // Non-goals:
 // - model every register and memory state transition
 // - model timing
-
-FILE* input;
-
-void checkInterrupt(void);
 
 enum {
   PORT_JOYBUS_WRITE = 0,
@@ -280,7 +277,6 @@ void interruptA(void) {
 
       // A 64B read was issued by RCP. If the 6105 challenge is requested do that,
       // otherwise execute the joybus transfer that was last programmed.
-      readCommand();
       if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_CHALLENGE)) {
         joybusTransfer();  // this will also call executeRCPTransfer() when it's done
         return;
@@ -308,7 +304,6 @@ void interruptA(void) {
 
     // If the joybus command bit (0x1) is set, turn it off and parse the joybus packet
     // into internal memory (see JOYBUS_*).
-    readCommand();
     if (RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_JOYBUS)) {
       RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_JOYBUS);
 
@@ -378,14 +373,10 @@ void executeRCPTransfer(void) {
 void cicLoop(void) {
   for (;;) {
     IME = 1;   // reenable interrupts (in case they were disabled, like during the challenge)
-    static bool checkOnce;  // todo: remove, for testing purposes
-    if (!checkOnce) {
-      checkOnce = true;
-      IFA = 1;
-      checkInterrupt();
-    }
 
     for (;;) {
+      sync();
+
       if (!RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {  // if we're not in running mode, start reset processs
         cicReset();
         return;
@@ -479,9 +470,8 @@ void boot(void) {
   IME = 1;
 
   // wait for rom lockout bit of PIF status byte to become set
-  do {
-    readCommand();
-  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_LOCKOUT));
+  while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_LOCKOUT))
+    sync();
 
   IME = 0;
 
@@ -492,9 +482,8 @@ void boot(void) {
   IME = 1;
 
   // wait for get checksum bit
-  do {
-    readCommand();
-  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_GET_CHECKSUM));
+  while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_GET_CHECKSUM))
+    sync();
 
   IME = 0;
 
@@ -504,9 +493,8 @@ void boot(void) {
   IME = 1;
 
   // wait for check checksum bit
-  do {
-    readCommand();
-  } while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_CHECK_CHECKSUM));
+  while (!RAM_BIT_TEST(PIF_CMD_U, PIF_CMD_U_CHECK_CHECKSUM))
+    sync();
 
   IME = 0;
 
@@ -547,10 +535,8 @@ void boot(void) {
 
   IME = 1;
 
-  for (;;) {
-    readCommand();
-    if (RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_TERMINATE))
-      break;
+  while (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_TERMINATE)) {
+    sync();
 
     bootTimerCheck();
   }
@@ -1095,11 +1081,18 @@ void regSave(void) {
 
 // end PIF ROM
 
+FILE* input;
+
 void checkInterrupt(void) {
   if (IFA && (RE & BIT(0)) && IME) {
     IFA = 0;
     IME = 0;
     interruptA();
+  }
+  if (IFB && (RE & BIT(2)) && IME) {
+    IFB = 0;
+    IME = 0;
+    interruptB();
   }
 }
 
@@ -1107,16 +1100,20 @@ void halt(void) {
   // todo: maybe simulate actual DMA transfer and second intA?
 }
 
-int scanValue(void) {
+void skipComments(void) {
   // remove comments before next token
   int num;
   do {
     num = 0;
-    fscanf(input, " #%n%*[^\n]", &num);
+    fscanf(input, " #%n%*[^\n] ", &num);
   } while (num > 0);
+}
+
+int scanValue(void) {
+  skipComments();
 
   int value;
-  if (1 != fscanf(input, "%i", &value)) {
+  if (1 != fscanf(input, "%x", &value)) {
     printf("scanf error\n");
     exit(3);
   }
@@ -1144,12 +1141,60 @@ void readRegion(void) {
   regionPAL = value;
 }
 
-void readCommand(void) {
-  printf("r cmd\n");
-  int value = scanValue();
-  printf("  %x\n", value);
-  RAM(PIF_CMD_U) = value >> 4;
-  RAM(PIF_CMD_L) = value & 0xf;
+bool readCommand(void) {
+  printf("r command\n");
+
+  skipComments();
+
+  char cmd[16];
+  if (1 != fscanf(input, "%15s", cmd)) {
+    printf("scanf error\n");
+    exit(3);
+  }
+
+  printf("  %s", cmd);
+
+  if (!strcmp(cmd, "w4")) {
+    int address = scanValue();
+    printf(" %x", address);
+    for (int i = 0; i < 8; ++i) {
+      int value = scanValue();
+      printf(" %x", value);
+      RAM(RAM_EXTERNAL + address * 2 + i) = value;
+    }
+    printf("\n");
+    IFA = 1;
+  } else if (!strcmp(cmd, "w64")) {
+    for (int i = 0; i < 0x80; ++i) {
+      int value = scanValue();
+      printf(" %x", value);
+      RAM(RAM_EXTERNAL + i) = value;
+    }
+    printf("\n");
+    IFA = 1;
+  } else if (!strcmp(cmd, "r64")) {
+    printf("\n");
+    IFA = 1;
+  } else if (!strcmp(cmd, "reset")) {
+    printf("\n");
+    IFB = 1;
+  } else if (!strcmp(cmd, "pass")) {
+    printf("\n");
+    return true;
+  } else if (!strcmp(cmd, "exit")) {
+    printf("\n");
+    exit(0);
+  } else {
+    printf("\nunrecognized\n");
+    exit(4);
+  }
+
+  return false;
+}
+
+void sync(void) {
+  while (!readCommand())
+    checkInterrupt();
 }
 
 void fatalError(void) {
