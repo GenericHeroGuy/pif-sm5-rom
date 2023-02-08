@@ -40,6 +40,10 @@ enum {
 
   ROM_LOCKOUT = BIT(0),
 
+  CIC_DATA_W = BIT(0),
+  CIC_CLOCK = BIT(1),
+  CIC_DATA_R = BIT(3),
+
   RCP_XFER_READ = BIT(3),
   RCP_XFER_64B = BIT(2),
 
@@ -134,7 +138,7 @@ void interruptA(void);
 void interruptB(void);
 void regRestore(void);
 void interruptEpilog(void);
-void halt(void);
+void executeRCPTransfer(void);
 void cicLoop(void);
 void cicCompare(void);
 void signalError(void);
@@ -145,7 +149,7 @@ void boot(void);
 void cicReset(void);
 bool increment8(u8* address);
 void bootTimer(void);
-void interruptEpilogID(void);
+void interruptEpilogChallenge(void);
 void joybusTransfer(void);
 void joybusTransferChannel(u8 n);
 void joybusWait(void);
@@ -165,7 +169,7 @@ void cicChallengeTransfer(u8 address);
 void regInitSB(void);
 u8 incrementPtr(u8 address);
 void cicCompareInit(void);
-void cicDecode(u8 address);
+void cicDescramble(u8 address);
 void cicCompareRound(u8 address);
 void cicCompareExpandSeed(void);
 void cicCompareCreateSeed(void);
@@ -173,7 +177,7 @@ void regSave(void);
 
 // 00:00
 void start(void) {
-  writeIO(PORT_CIC, 1);
+  writeIO(PORT_CIC, CIC_DATA_W);
   writeIO(REG_INT_EN, INT_A_EN);
 
   regInitSB();
@@ -197,8 +201,8 @@ void start(void) {
   for (u8 address = CIC_SEED_BUF; address < CIC_SEED_END; ++address)
     cicReadNibble(address);
 
-  cicDecode(CIC_SEED_BUF);
-  cicDecode(CIC_SEED_BUF);
+  cicDescramble(CIC_SEED_BUF);
+  cicDescramble(CIC_SEED_BUF);
 
   u8 a = RAM(STATUS);
   RAM_BIT_RESET(STATUS, STATUS_CHALLENGE);
@@ -238,25 +242,32 @@ void joybusStatusInit(void) {
 
 // 01:20
 void cicWriteBit(bool value) {
-  writeIO(PORT_CIC, value | 2);
+  writeIO(PORT_CIC, (value ? CIC_DATA_W : 0) | CIC_CLOCK);
   SPIN(5);
-  writeIO(PORT_CIC, 1);
+  writeIO(PORT_CIC, CIC_DATA_W);
   SPIN(4);
 }
 
 // 01:2A
 // read bit from CIC
 bool cicReadBit(void) {
-  writeIO(PORT_CIC, 3);
+  writeIO(PORT_CIC, CIC_DATA_W | CIC_CLOCK);
   SPIN(5);
-  bool c = readIO(PORT_CIC) & BIT(3);
-  writeIO(PORT_CIC, 1);
+  bool c = readIO(PORT_CIC) & CIC_DATA_R;
+  writeIO(PORT_CIC, CIC_DATA_W);
   SPIN(4);
   return c;
 }
 
 // 02:00
-// triggered by DMA 64B 
+// Triggered by all RCP accesses (Read4B / Read64B / Write4B / Write64B)
+// The interrupt is actually triggered twice: one at the beginning which just
+// signals the request from RCP; then the PIF must call executeRCPTransfer that will
+// actually begin the transfer, and the interrupt will then trigger a second
+// time at the end of the transfer.
+// The way the firmware is designed, though, means this interrupt handler is only
+// called on the first trigger, as the second one will happen while interrupts are
+// disabled.
 void interruptA(void) {
   SB = B;
   RAM(SAVE_A) = A;
@@ -267,22 +278,31 @@ void interruptA(void) {
       // A 64B read was issued by RCP. If the 6105 challenge is requested do that,
       // otherwise execute the joybus transfer that was last programmed.
       if (!RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_CHALLENGE)) {
-        joybusTransfer();
+        joybusTransfer();  // this will also call executeRCPTransfer() when it's done
         return;
       }
 
       if (RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {
-        interruptEpilogID();
-        return;
+        // We need to do the 6105 challenge with the CIC. We can't do it right away
+        // because the main loop might be doing a cicCompare() right now, so we just
+        // set the challenge bit and let the main loop do it when it's ready.
+        // NOTE: interruptEpilogChallenge() actually does a "RTN" rather than "RTNI",
+        // so it leaves interrupts disabled. We don't want other interrupts to happen
+        // while we are waiting for the challenge to be run.
+        interruptEpilogChallenge();
+        return;  
       }
     }
 
-    halt();
+    // Let the transfer run with the current PIF-RAM contents. This happens for all
+    // Read4B transfers (aka CPU reads), and Read64B transfers
+    executeRCPTransfer();
   } else {
-    halt();
+    // A write was issued by RCP (either Write4B or Write64B). In this case, let the
+    // transfer run right away and then process the updated contents of PIF-RAM.
+    executeRCPTransfer();
 
-    // This is either a 4B or a 64B write. Either case, as soon as we see the
-    // joybus command bit (0x1), turn it off and parse the joybus packet
+    // If the joybus command bit (0x1) is set, turn it off and parse the joybus packet
     // into internal memory (see JOYBUS_*).
     if (RAM_BIT_TEST(PIF_CMD_L, PIF_CMD_L_JOYBUS)) {
       RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_JOYBUS);
@@ -328,12 +348,21 @@ void interruptEpilog(void) {
 }
 
 // 03:06
-// wait for interrupt A
-void halt(void) {
-  writeIO(REG_INT_EN, INT_A_EN);   // enable A and disable B
+// This function is meant to be called during interruptA. When the intA first triggers,
+// the transfer from RCP is paused waiting for an ACK from PIF. This function gives
+// the ACK (send the "start bit"), and then wait for the actual transfer to finish. 
+void executeRCPTransfer(void) {
+  // Re-enable intA. This is *probably* the trigger for the hardware unit in charge of
+  // RCP communication to send the ACK bit (aka "start bit") which makes the RCP transfer
+  // actually begin. We don't know for sure, but it's the most probable explanation, as
+  // this function really does nothing else.
+  writeIO(REG_INT_EN, INT_A_EN);
 
-  // todo: should we do anything for halt/standby?
-  // HALT = 1;
+  // Now that the RCP transfer is in progress, wait for intA to trigger again, which
+  // signals that it is finished. Notice that IME=0 here, so the core does not jump
+  // to the interrupt vector (interruptA()), but it will just exit from halt status
+  // and continue execution.
+  halt();
 
   if (RAM_BIT_TEST(STATUS, STATUS_RUNNING)) {
     writeIO(REG_INT_EN, INT_A_EN | INT_B_EN);   // reenable B (unless we're already resetting)
@@ -343,7 +372,7 @@ void halt(void) {
 // 03:0B
 void cicLoop(void) {
   for (;;) {
-    IME = 1;
+    IME = 1;   // reenable interrupts (in case they were disabled, like during the challenge)
 
     for (;;) {
       sync();
@@ -352,7 +381,7 @@ void cicLoop(void) {
         cicReset();
         return;
       }
-      if (RAM_BIT_TEST(STATUS, STATUS_CHALLENGE)) {
+      if (RAM_BIT_TEST(STATUS, STATUS_CHALLENGE)) { // if the challenge bit is set, run the challenge
         RAM_BIT_RESET(STATUS, STATUS_CHALLENGE);
         cicChallenge();
         break;
@@ -499,9 +528,9 @@ void boot(void) {
   //     leave it to game code. Maybe it's just a security by obscurity measure, so that the code
   //     setting the bit is "hidden" somewhere in game code, making harder to find
   //     out about it.
-  // [2] Skipping RDRAM initialization on warm boots is a design decision to allow game code
-  //     to store data in RDRAM that will be preserved across reset (see osAppNMIBuffer in
-  //     libultra).
+  // [2] Skipping RDRAM initialization on warm boots is a design decision to allow for faster
+  //     boots and for game code to store data in RDRAM that will be preserved across reset
+  //     (see osAppNMIBuffer in libultra).
   bootTimerInit(BOOT_TIMER);
 
   IME = 1;
@@ -526,12 +555,12 @@ void boot(void) {
 void cicReset(void) {
   cicWriteBit(1);
   cicWriteBit(1);
-  writeIO(PORT_CIC, 3);
+  writeIO(PORT_CIC, CIC_DATA_W | CIC_CLOCK);
   memZero(RESET_TIMER);
 
   for (;;) {
     RAM_BIT_SET(PIF_CMD_U, PIF_CMD_U_ACK);
-    if (!(readIO(PORT_CIC) & BIT(3)))
+    if (!(readIO(PORT_CIC) & CIC_DATA_R))
       break;
 
     u8 b = RESET_TIMER_END - 1;
@@ -539,7 +568,7 @@ void cicReset(void) {
       signalError();
   }
 
-  writeIO(PORT_CIC, 1);
+  writeIO(PORT_CIC, CIC_DATA_W);
 
   while (!(readIO(PORT_RESET) & RESET_BUTTON)) // keep the reset on hold until the button is kept pressed
     ;
@@ -580,25 +609,32 @@ void bootTimerCheck(void) {
 }
 
 // 07:09
-// leaves interrupts disabled
-void interruptEpilogID(void) {
-  RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_CHALLENGE);
-  RAM_BIT_SET(STATUS, STATUS_CHALLENGE);
+// Epilog of the interrupt for the challenge command.
+void interruptEpilogChallenge(void) {
+  RAM_BIT_RESET(PIF_CMD_L, PIF_CMD_L_CHALLENGE);  // turn off challenge bit in command byte
+  RAM_BIT_SET(STATUS, STATUS_CHALLENGE);  // tell the main loop that will need to do the challenge
   A = RAM(SAVE_A);
   B = SB;
+  // NOTE: this is a RTN rather than a RTNI, so this function exits the interrupt vector
+  // but leaves interrupts disabled.
+  return;
 }
 
 // 07:13
 void joybusTransfer(void) {
   regSave();
 
+  // Go through the 5 channels in reverse order, and do the actual
+  // joybus protocol transfer.
   u8 n = 4;
   do {
     joybusTransferChannel(n);
     n = readIO(PORT_JOYBUS_CHANNEL);
   } while (n--);
 
-  halt();
+  // Now that PIF-RAM has been updated with contents reads from joybus devices,
+  // execute the RCP transfer, so that the data is sent to the CPU via RCP.
+  executeRCPTransfer();
 
   regRestore();
 }
@@ -879,15 +915,21 @@ void cicChallenge(void) {
   cicReadBit();  // return value discarded
   cicChallengeTransfer(CIC_CHALLENGE_COUNT_IN);
 
-  halt();
+  // Now that the challenge is complete and the data is in PIF-RAM, runs the RCP transfer
+  // that was left suspended since interruptA() triggered. This will actually transfer the
+  // data to the CPU via RCP.
+  executeRCPTransfer();
   regInitSB();
 }
 
 // 0D:1B
-void cicChallengeTransfer(u8 address) {
-  for (u8 b = CIC_CHALLENGE_LO; RAM(address) != 0; b += 2) {
-    RAM(address) -= 1;
-    if (address != CIC_CHALLENGE_COUNT_OUT) {
+void cicChallengeTransfer(u8 counter_ptr) {
+  // Do the transfer. The counter is decremented by 1 for each byte transferred,
+  // so assuming it starts from 0, it runs the loop 15 times (=> 30 nibbles, 15 bytes)
+  // and leaves it at 0 again for next transfer.
+  for (u8 b = CIC_CHALLENGE_LO; RAM(counter_ptr) != 0; b += 2) {
+    RAM(counter_ptr) -= 1;
+    if (counter_ptr != CIC_CHALLENGE_COUNT_OUT) {
       cicReadNibble(b + 0);
       cicReadNibble(b + 1);
     } else {
@@ -912,28 +954,39 @@ u8 incrementPtr(u8 address) {
 
 // 0E:00
 void cicCompareInit(void) {
+  // Set the RESET flag in OSINFO in internal memory. In fact, the previous value
+  // have been already copied to external memory and read by the CPU. If the conole
+  // is reset in the future, this value will be copied to external memory, including
+  // the RESET bit.
   RAM_BIT_SET(OSINFO, OSINFO_RESET);
 
   cicCompareCreateSeed();
 
-  writeIO(PORT_CIC, 3);
+  // Pulse the clock to begin CIC compare transfer. This pulse has also the effect
+  // of providing some entropy to CIC. In fact, the previous function cicCompareCreateSeed()
+  // used a hardware time-based RNG, so it takes a random amount of time to complete.
+  // Meanwhile, the CIC is running a psuedo-RNG waiting for the clock pulse. Since
+  // the exact time of the pulse depends on the hardware RNG in PIF, the CIC will stop
+  // its psuedo-RNG at a random time.
+  // The CIC uses that RNG to create the scramble key put at the start of CIC_CHECKSUM_BUF.
+  writeIO(PORT_CIC, CIC_DATA_W | CIC_CLOCK);
   spin256();
-  writeIO(PORT_CIC, 1);
+  writeIO(PORT_CIC, CIC_DATA_W);
 
   for (u8 address = CIC_CHECKSUM_BUF; address < CIC_CHECKSUM_END; ++address)
     cicReadNibble(address);
 
-  cicDecode(CIC_CHECKSUM_BUF);
-  cicDecode(CIC_CHECKSUM_BUF);
-  cicDecode(CIC_CHECKSUM_BUF);
-  cicDecode(CIC_CHECKSUM_BUF);
+  cicDescramble(CIC_CHECKSUM_BUF);
+  cicDescramble(CIC_CHECKSUM_BUF);
+  cicDescramble(CIC_CHECKSUM_BUF);
+  cicDescramble(CIC_CHECKSUM_BUF);
 
   cicCompareExpandSeed();
 }
 
 // 0E:15
 // decode CIC seed or checksum (one round)
-void cicDecode(u8 address) {
+void cicDescramble(u8 address) {
   u8 a = 0xf;
   do {
     u8 b = RAM(address);
@@ -1041,6 +1094,10 @@ void checkInterrupt(void) {
     IME = 0;
     interruptB();
   }
+}
+
+void halt(void) {
+  // todo: maybe simulate actual DMA transfer and second intA?
 }
 
 void skipComments(void) {
