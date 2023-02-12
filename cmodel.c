@@ -148,7 +148,7 @@ void joybusHandleError(void);
 void boot(void);
 void cicReset(void);
 bool increment8(u8* address);
-void bootTimer(void);
+void bootTimerCheck(void);
 void interruptEpilogChallenge(void);
 void joybusTransfer(void);
 void joybusTransferChannel(u8 n);

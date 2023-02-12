@@ -64,6 +64,7 @@ r4 ram[256];
 
 u8 readIO(u8 port);
 void writeIO(u8 port, u8 value);
+void halt(void);
 void sync(void);
 void fatalError(void);
 void notImpl(u8 pu, u8 pl);
