@@ -148,7 +148,7 @@ void joybusHandleError(void);
 void boot(void);
 void cicReset(void);
 bool increment8(u8* address);
-void bootTimer(void);
+void bootTimerCheck(void);
 void interruptEpilogChallenge(void);
 void joybusTransfer(void);
 void joybusTransferChannel(u8 n);
@@ -1181,7 +1181,7 @@ bool readCommand(void) {
   } else if (!strcmp(cmd, "pass")) {
     printf("\n");
     return true;
-  } else if (!strcmp(cmd, "exit")) {
+  } else if (!strcmp(cmd, "q")) {
     printf("\n");
     exit(0);
   } else {

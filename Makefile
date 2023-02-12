@@ -13,8 +13,15 @@ cmodel: cmodel.o
 
 cmodel.o: cmodel.c cmodel.h
 
+cmodel_cic: cmodel_cic.o
+
+cmodel_cic.o: cmodel_cic.c cmodel.h
+
 run: cmodel
 	./cmodel input.txt
+
+run_cic: cmodel_cic
+	./cmodel_cic input_cic.txt
 
 clean:
 	rm -f pif.sm5.ntsc.rom pif.sm5.pal.rom cmodel cmodel.o

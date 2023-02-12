@@ -17,6 +17,13 @@ w4 3c 0 0 0 0 0 0 1 0
 0
 pass
 
+# Write checksum - CIC 6102
+w4 30 0 0 0 0 a 5 3 6
+# P7 RCP write
+0
+w4 34 c 0 f 1 d 8 5 9
+# P7 RCP write
+0
 # Get checksum
 w4 3c 0 0 0 0 0 0 2 0
 # P7 RCP write
@@ -31,23 +38,23 @@ pass
 
 # P9 (RNG seed?)
 8
-# P5 checksum - all zero (encoded)
+# P5 checksum - 0000a536c0f1d859 (encoded)
 0 0 0 0
 0 8 0 0
 8 8 8 0
 0 0 8 0
-0 8 0 8
-8 8 0 8
-0 0 0 8
-8 0 0 8
-8 8 8 0
+8 8 8 8
 8 0 8 0
-8 0 0 0
-0 8 0 0
-8 0 8 8
-8 0 8 8
-0 0 8 8
-0 0 8 8
+8 8 0 0
+0 8 0 8
+0 0 8 0
+0 0 0 8
+0 0 0 0
+8 8 8 8
+8 8 0 0
+8 8 8 0
+0 0 8 0
+8 8 8 8
 
 # Terminate boot process
 w4 3c 0 0 0 0 0 0 0 8
@@ -128,4 +135,4 @@ pass
 # P8
 8
 
-exit
+q
