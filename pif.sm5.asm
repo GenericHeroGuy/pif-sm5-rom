@@ -36,6 +36,32 @@ constant pifCommandHi.readChecksum = 1 // when set by VR4300, copy checksum from
 constant pifCommandHi.testChecksum = 2 // when set by VR4300, begin comparing checksum
 constant pifCommandHi.readAck = 3      // set by PIF to acknowledge reading checksum
 
+// 15-byte area for holding challenge/response data
+constant cicChallengeData = $e0 // .. $fd
+
+// number of bytes to receive from CIC during challenge/response
+constant cicResponseCount = $df
+// number of bytes to send to CIC during challenge/response
+constant cicChallengeCount = $dd
+
+
+// used to generate the random CIC compare nibbles
+constant cicRngTimerLo = $69
+constant cicRngTimerHi = $68
+
+// first nibbles of each CIC compare data array, randomly generated
+constant cicRandomHi = $71
+constant cicRandomLo = $61
+
+// 14-nibble array for CIC compare data, one page for lo/hi nibble
+constant cicCompareLo = $62 // $63, $64, $65, $66, $67, $68, $69, $6a, $6b, $6c, $6e, $6f
+constant cicCompareHi = $72 // $73, $74, $75, $76, $77, $78, $79, $7a, $7b, $7c, $7e, $7f
+constant cicCompareLoEnd = $6f
+constant cicCompareHiEnd = $7f
+
+// pointer for PAT table
+constant patPointer = $60
+
 // status nibble
 constant pifStatus = $5e
 constant pifStatus.doChallenge = 1  // if set, run CIC challenge protocol
@@ -44,6 +70,14 @@ constant pifStatus.resetPending = 3 // if clear, reset is pending
 // 6-nibble boot timer
 constant bootTimer = $4f // $4e, $4d, $4c, $4b, $4a
 constant bootTimerEnd = $4a
+
+// 6-byte checksum from IPL2
+constant ipl2Checksum = $34 // $35, $36, $37, $38, $39, $3a, $3b, $3c, $3d, $3e, $3f
+
+// 8-byte checksum from CIC
+// only the last 6 bytes are used
+constant cicChecksum = $20 // $21, $22, $23, $24, $25, $26, $27, $28, $29, $2a, $2b, $2c, $2d, $2e, $2f
+constant cicChecksumEnd = $2f
 
 // copy of Tx and Rx count for joybus transfer
 constant txCountHi = $22
@@ -55,12 +89,18 @@ constant rxCountLo = $33
 constant osInfo = $1b
 constant osInfo.64dd = 3    // if set, 64DD is connected
 constant osInfo.version = 2 // always set
+constant osInfo.reset = 1   // set on cold boot, not visible to VR4300 until next reset
 
-// 6-nibble CIC seed
+// 6-nibble CIC seed, used to seed VR4300 checksums
+// only the last 4 nibbles are used ($1b is overwritten by osInfo, $1a is never sent to VR4300)
 constant cicSeed = $1a // $1b, $1c, $1d, $1e, $1f
 
 // 4-nibble reset timer
 constant resetTimer = $0f // $0e, $0d, $0c
+
+// delay before receiving response from challenge/response protocol
+constant cicResponseTimerHi = $0a
+constant cicResponseTimerLo = $0b
 
 // status for each channel
 constant joybusChStatus = $40 // $41, $42, $43, $44, $45
@@ -149,8 +189,9 @@ ResetVector: // 00:00
 	out // RE <- 1
 	trs TRS_SetSB // SB = saveA
 
-	lbx $34
-	trs ClearMemPage // [$34..$3f] = 0
+// clear IPL2 checksum
+	lbx ipl2Checksum
+	trs ClearMemPage
 
 // write CIC type to pifStatus
 	lbx pifStatus
@@ -187,15 +228,16 @@ ClearPifRam: // 00:1A
 	tr ClearPifRam
 
 // write CIC seed to [$1a..$1f]
+// this will be sent to VR4300 to seed its checksum algorithms
 	lbx cicSeed
 -;	trs TRS_CicReadNibble
 	tr -
 
-// decode seed (2 rounds)
+// descramble seed (2 rounds)
 	lblx {low(cicSeed)}
-	trs TRS_CicDecodeSeed
+	trs TRS_CicDescramble
 	lblx {low(cicSeed)}
-	trs TRS_CicDecodeSeed
+	trs TRS_CicDescramble
 
 // copy CIC type to osInfo, and clear pifStatus
 // this will eventually be written to [$cb] (PIF-RAM $24 bits 0-3)
@@ -226,10 +268,10 @@ TRS_CicWriteNibble: // 01:04
 	tl CicWriteNibble
 TRS_LongDelay: // 01:06
 	tl LongDelay
-TRS08: // 01:08
-	tl L0E_1B
-TRS_CicDecodeSeed: // 01:0A
-	tl CicDecodeSeed
+TRS_CicCompareRound: // 01:08
+	tl CicCompareRound
+TRS_CicDescramble: // 01:0A
+	tl CicDescramble
 TRS_SignalError: // 01:0C
 	tl SignalError
 TRS_CicReadNibble: // 01:0E
@@ -427,9 +469,9 @@ HaltCpu: // 03:06
 	tr StandbyExit
 
 
-CicLoopStart: // 03:0B
+MainLoopStart: // 03:0B
 	ie
-CicLoop: // 03:0C
+MainLoop: // 03:0C
 	lbx pifStatus
 
 // check if reset is pending
@@ -448,36 +490,47 @@ CicCompare: // 03:16
 	trs CicWriteBit
 	lax CIC_WRITE_0
 	trs CicWriteBit
-	lbmx 6 // B = $6e
-	trs TRS08 // L0E_1B
-	trs TRS08 // L0E_1B
-	trs TRS08 // L0E_1B
-	lbmx 7 // B = $7e
-	trs TRS08 // L0E_1B
-	trs TRS08 // L0E_1B
-	trs TRS08 // L0E_1B
 
-	lbx $77
+	lbmx {high(cicCompareLo)}
+	trs TRS_CicCompareRound
+	trs TRS_CicCompareRound
+	trs TRS_CicCompareRound
+
+	lbmx {high(cicCompareHi)}
+	trs TRS_CicCompareRound
+	trs TRS_CicCompareRound
+	trs TRS_CicCompareRound
+
+// use cicCompareHi[5] to select which nibble to send
+// if value is 0, add 1 (compare array spans 1-15)
+	lbx cicCompareHi + 5
 	lda 0
 	adx 15
 	lax 0
 	adx 1
 	exbl
 
-L03_29: // 03:29
-	lbmx 6
-	lax 3
+CicCompareLoop: // 03:29
+// write bit 0 of cicCompareLo[Bl] to CIC
+// TODO CIC would probably halt if it receives an incorrect bit
+	lbmx {high(cicCompareLo)}
+	lax CIC_WRITE_1
 	tm 0
 	lax CIC_WRITE_0
 	trs CicWriteBit
-	lbmx 7
-	trs CicReadBit // return with B = $75
+
+// read bit from CIC, then compare with bit 0 of cicCompareHi[Bl]
+// if bits don't match, freeze the system
+	lbmx {high(cicCompareHi)}
+	trs CicReadBit
 	tc
-	tr L03_37
+	tr CicCheck0
+
+// CIC bit = 1, check if bit = 1
 	tm 0
 	tr SignalError
 
-L03_34: // 03:34
+CicCompareNext: // 03:34
 if regionNTSC {
 	incb
 } else if regionPAL {
@@ -485,11 +538,13 @@ if regionNTSC {
 	lax 0
 	tabl
 }
-	tr L03_29
-	tr CicLoop
-L03_37: // 03:37
+	tr CicCompareLoop
+	tr MainLoop
+
+CicCheck0: // 03:37
+// CIC bit = 0, check if bit = 0
 	tm 0
-	tr L03_34
+	tr CicCompareNext
 
 // infinite loop, strobe reset port (NMI and pre-NMI IRQ)
 SignalError: // 03:39
@@ -503,6 +558,7 @@ SignalError: // 03:39
 // page 4 (PAT data)
 origin $100
 
+// PAT table data, used to initialize CIC compare data
 if regionNTSC {
 	db $19, $4a, $f1, $88, $b5, $5a, $71, $c3, $de, $61, $10, $ed, $9e, $8c
 } else if regionPAL {
@@ -510,8 +566,8 @@ if regionNTSC {
 }
 
 // swap internal and external memory
-// [$1b..$1f] <-> [$cb..$cf]
-// [$34..$3f] <-> [$e4..$ef]
+// osInfo, cicSeed: [$1b..$1f] <-> [$cb..$cf]
+// ipl2Checksum: [$34..$3f] <-> [$e4..$ef]
 SwapMem: // 04:0E
 	lbx $cb
 	call SwapMemLoop
@@ -623,18 +679,20 @@ SystemBoot: // 05:00
 	id
 	lax 0
 	exc 0 // clear pifCommandHi
-	tc // call only on cold boot
-	call L0E_00
 
-	lbx $34
-CompareChecksums: // 05:22
-	lax 0
-	exc 1
+// if this is a cold boot, read CIC's IPL3 checksum and initialize compare data
+	tc
+	call CicInit
+
+// compare IPL2's checksum with CIC's checksum (and clear IPL2 checksum)
+	lbx ipl2Checksum
+-;	lax 0
+	exc 1 // Bm = high(cicChecksum)
 	tam
 	trs TRS_SignalError
-	lbmx 3
+	lbmx {high(ipl2Checksum)}
 	incb
-	tr CompareChecksums
+	tr -
 
 // initialize boot timer
 	lbx bootTimerEnd
@@ -658,13 +716,14 @@ WaitTerminateBit: // 05:2D
 	sm pifStatus.resetPending // clear pending reset flag
 	tb // clear interrupt B flag
 	nop
-	tl CicLoopStart
+	tl MainLoopStart
 
 ////////////////////////////////////////
 // page 6
 origin $180
 
 ResetSystem: // 06:00
+// send reset command to CIC
 	lax CIC_WRITE_1
 	trs CicWriteBit
 	lax CIC_WRITE_1
@@ -764,7 +823,7 @@ IncrementBootTimer: // 07:00
 +;	tl WaitTerminateBit
 	trs TRS_SignalError
 
-// tell CicLoop to run challenge protocol
+// tell the main loop to run challenge protocol
 // once finished, it will halt so RCP can read the result
 SetChallengeBit: // 07:09
 	lbx pifCommandLo
@@ -1320,60 +1379,82 @@ ReadSplitByte: // 0C:32
 // page D
 origin $340
 
+// This routine runs the challenge/response protocol used by CIC-6105.
+// It sends the challenge data starting at PIF-RAM $30 to the CIC,
+// and writes the response back to PIF-RAM $30.
+// No. of bytes to send to CIC is specified at PIF-RAM $2E,
+// bytes to receive specified at $2F.
 CicChallenge: // 0D:00
+// send challenge command to CIC
 	lax CIC_WRITE_1
 	trs CicWriteBit
 	lax CIC_WRITE_0
 	trs CicWriteBit
-	lbx $0a
-	trs TRS_CicReadNibble
-	trs TRS_CicReadNibble
-	lbx $dd
-	call L0D_1B
-	lbx $0b
 
+// read response timer value from CIC (how long to wait before reading response)
+	lbx cicResponseTimerHi
+	trs TRS_CicReadNibble
+	trs TRS_CicReadNibble
+
+// send challenge data to CIC
+	lbx cicChallengeCount
+	call CicChallengeTransfer
+
+// decrement the response timer to zero
+	lbx cicResponseTimerLo
 -;	trs TRS_IncrementByte
 	tr -
+	trs CicReadBit // acknowledge timer reaching zero
 
-	trs CicReadBit
-	lbx $df
-	call L0D_1B
+// receive response from CIC
+	lbx cicResponseCount
+	call CicChallengeTransfer
 
 // halt so RCP can read challenge response
 // (we're still handling an interrupt!)
 	lbmx {high(pifStatus)}
 	call HaltCpu
 	trs TRS_SetSB // SB = saveA
-	tl CicLoopStart // re-enable interrupts
+	tl MainLoopStart // return to main loop and re-enable interrupts
 
 
-L0D_1B: // 0D:1B
+CicChallengeTransfer: // 0D:1B
 	ex
-	lbx $e0
-L0D_1E: // 0D:1E
+	lbx cicChallengeData // $30 in PIF-RAM
+CicChallengeLoop: // 0D:1E
 	ex
+
+// decrement count, return on underflow
 	lda 0
 	adx 15
 	rtn
-
 	exc 0
-	lax 13
-	tabl
-	tr L0D_2B
-	ex
-	trs TRS_CicWriteNibble
-	trs TRS_CicWriteNibble
-	tr L0D_1E
-	tr L0D_2F
 
-L0D_2B: // 0D:2B
+// check which counter Bl points to
+	lax {low(cicChallengeCount)}
+	tabl
+	tr CicResponse
+
+// Bl points to cicChallengeCount, send data to CIC
+	ex
+	trs TRS_CicWriteNibble
+	trs TRS_CicWriteNibble
+	tr CicChallengeLoop
+	tr CicChallengeIncBm // increment Bm if Bl overflows
+
+// Bl points to cicResponseCount, receive data from CIC
+CicResponse: // 0D:2B
 	ex
 	trs TRS_CicReadNibble
 	trs TRS_CicReadNibble
-	tr L0D_1E
-L0D_2F: // 0D:2F
+	tr CicChallengeLoop
+
+// increment Bm from 14 to 15
+// assumes Bm is 14 (no problem, challenge data can't exceed 16 bytes)
+CicChallengeIncBm: // 0D:2F
 	lbmx 15
-	tr L0D_1E
+	tr CicChallengeLoop
+
 
 // set SB = $56, for handling interrupts
 SetSB: // 0D:31
@@ -1397,31 +1478,39 @@ IncrementPtr: // 0D:35
 // page E
 origin $380
 
-L0E_00: // 0E:00
+CicInit: // 0E:00
+// set reset bit, copied to VR4300 on next reset
 	lbx osInfo
-	sm 1
-	call L0F_1B
+	sm osInfo.reset
+
+// generate random seed for compare protocol
+	call CicGenerateRandomSeed
+
+// signal CIC to send its IPL3 checksum
 	lblx cicPort
 	lax CIC_WRITE_1
 	out // P5 <- 3
 	trs TRS_LongDelay
 	lax CIC_WRITE_OFF
 	out // P5 <- 1
-	lbx $20
-L0E_0D: // 0E:0D
-	trs TRS_CicReadNibble
-	tr L0E_0D
 
-// 4 rounds of decoding
-	trs TRS_CicDecodeSeed
-	trs TRS_CicDecodeSeed
-	trs TRS_CicDecodeSeed
-	trs TRS_CicDecodeSeed
-	tl L0F_00
+// read 8-byte checksum from CIC
+	lbx cicChecksum
+-;	trs TRS_CicReadNibble
+	tr -
 
-// decode CIC seed or checksum (one round)
+// do 4 rounds of descrambling on the CIC checksum
+	trs TRS_CicDescramble
+	trs TRS_CicDescramble
+	trs TRS_CicDescramble
+	trs TRS_CicDescramble
+
+// initialize CIC compare data with contents of PAT table
+	tl CicInitCompare
+
+// descramble data received from CIC
 // loop until end of memory page
-CicDecodeSeed: // 0E:15
+CicDescramble: // 0E:15
 	lax 15
 -;	coma
 	add
@@ -1429,100 +1518,141 @@ CicDecodeSeed: // 0E:15
 	tr -
 	rtn
 
-L0E_1B: // 0E:1B
-	lblx 15
+// Bm = high(cicCompareLo) or high(cicCompareHi)
+CicCompareRound: // 0E:1B
+// read last nibble from compare array, determines how many rounds to run
+	lblx {low(cicCompareLoEnd)}
 	lda 0
-L0E_1D: // 0E:1D
+
+CicCompareRoundLoop: // 0E:1D
 	atx
+
+// A += random + 1
 	sc
-	lblx 1
+	lblx {low(cicRandomLo)}
 	adc
 	sc
+
+// random <- A
 	exc 0
 	lda 0
+
+// A += compare[0] + 1; A ^= $f
 	incb
 	adc
 	sc
 	coma
+
+// compare[0] <- A; A <- old compare[0]
 	exci 0
+
+// A += compare[1] + 1; if no overflow, compare[1] <- A
 	adc
 	exci 0
+
+// compare[1/2] <- A += compare[1/2]; A <- compare[1/2]
 	add
 	exc 0
 	lda 0
+
+// compare[2/3] <- A += compare[2/3]; A <- old compare[2/3]
 	incb
 	add
 	exci 0
+
+// A += 8; if no overflow, A += compare[3/4]
 	adx 8
 	add
+
+// compare[3/4] <- A
 	exci 0
 
-L0E_34: // 0E:34
+// Bl is either 4 or 5
+// A is old value of compare[3/4]
+CicCompareAdd:
+// A += 1 + compare[Bl]
 	adx 1
 	nop
 	add
+
+// compare[Bl] <- A
 	exc 0
 	lda 0
-	incb
-	tr L0E_34
 
+	incb
+	tr CicCompareAdd
+
+// decrement X, do another round if not zero
 	exax
 	adx 15
 	rtn
-	tr L0E_1D
+	tr CicCompareRoundLoop
 
 ////////////////////////////////////////
 // page F
 origin $3C0
 
-L0F_00: // 0F:00
-	lbx $60
+CicInitCompare: // 0F:00
+// reset PAT pointer to zero
+	lbx patPointer
 	lax 0
 	exc 0
+
 	ex
-	lbx $62
-L0F_07: // 0F:07
+	lbx cicCompareLo
+CicInitCompareLoop: // 0F:07
 	ex
 	lax 4
-	atx
+	atx // X <- 4
+
+// load then increment patPointer
 	lda 0
 	adx 1
 	exc 0
 	ex
-	pat
+
+// load byte from PAT and write it to cicCompare
+	pat // XA <- PAT[XA]
 	nop
-	exc 1
+	exc 1 // cicCompareLo[Bl] <- low(PAT[XA])
 	exax
-	exci 1
-	tr L0F_07
-	lblx 1
+	exci 1 // cicCompareHi[Bl] <- high(PAT[XA])
+	tr CicInitCompareLoop
+
+// write random seed generated earlier to CIC
+	lblx {low(cicRandomLo)}
 	trs TRS_CicWriteNibble
-	lbx $71
+	lbx cicRandomHi
 	trs TRS_CicWriteNibble
 	tl SetSB // SB = saveA
+	// rtn (tail call)
 
-L0F_1B: // 0F:1B
-	lbx $69 // Bl <- rngPort
+CicGenerateRandomSeed: // 0F:1B
+	lbx cicRngTimerLo // Bl <- rngPort
 	lax 1
 	out // P9 <- 1
 
-L0F_1F: // 0F:1F
-	call IncrementByte
+// increment random seed byte until RNG bit goes high
+-;	call IncrementByte
 	nop
-	lblx rngPort
+	lblx {low(cicRngTimerLo)} // prevent overflowing to next byte
 	tpb rngPort.output // test P9.3
-	tr L0F_1F
+	tr -
 
+// halt RNG
 	lax 0
 	out // P9 <- 0
-	excd 0
+
+// write each nibble of the random byte to the first nibble of CIC compare arrays
+	excd 0 // read cicRngTimerLo (and set it to 0)
 	exax
-	exc 0
-	lblx 1
-	exc 1
+	exc 0 // read cicRngTimerHi (and set it to X)
+	lblx {low(cicRandomLo)}
+	exc 1 // write cicRngTimerHi to cicRandomLo
 	exax
-	exc 1
+	exc 1 // write cicRngTimerLo to cicRandomHi
 	rtn
+
 
 // save SB, X and C
 SaveRegs: // 0F:2F
