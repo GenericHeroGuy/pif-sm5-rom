@@ -3,4 +3,7 @@ pif.sm5.pal.rom
 cmodel
 cmodel.*
 !cmodel.[hc]
+cmodel_cic
+cmodel_cic.*
+!cmodel_cic.c
 user.mk
