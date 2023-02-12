@@ -1181,7 +1181,7 @@ bool readCommand(void) {
   } else if (!strcmp(cmd, "pass")) {
     printf("\n");
     return true;
-  } else if (!strcmp(cmd, "exit")) {
+  } else if (!strcmp(cmd, "q")) {
     printf("\n");
     exit(0);
   } else {
