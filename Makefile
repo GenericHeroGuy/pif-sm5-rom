@@ -1,4 +1,4 @@
-roms: pif.sm5.ntsc.rom pif.sm5.pal.rom
+roms: pif.sm5.ntsc.rom pif.sm5.pal.rom cic.6101.rom
 	@sha256sum -c sha256sums.txt
 
 pif.sm5.ntsc.rom: pif.sm5.asm
@@ -6,6 +6,9 @@ pif.sm5.ntsc.rom: pif.sm5.asm
 
 pif.sm5.pal.rom: pif.sm5.asm
 	@bass -strict -c region=1 -o $@ $^
+
+cic.6101.rom: cic.6101.asm
+	@bass -strict -c region=0 -o $@ $^
 
 CFLAGS = -g -Wall -Wextra -Wpedantic
 
@@ -24,6 +27,6 @@ run_cic: cmodel_cic
 	./cmodel_cic input_cic.txt
 
 clean:
-	rm -f pif.sm5.ntsc.rom pif.sm5.pal.rom cmodel cmodel.o
+	rm -f pif.sm5.ntsc.rom pif.sm5.pal.rom cic.6101.rom cmodel cmodel.o
 
 -include user.mk

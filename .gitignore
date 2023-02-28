@@ -1,5 +1,6 @@
 pif.sm5.ntsc.rom
 pif.sm5.pal.rom
+cic.6101.rom
 cmodel
 cmodel.*
 !cmodel.[hc]
